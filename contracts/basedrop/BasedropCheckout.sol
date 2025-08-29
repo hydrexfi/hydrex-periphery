@@ -49,6 +49,9 @@ contract BasedropCheckout is AccessControl, ReentrancyGuard {
     /// @notice Lock type for permanent lock
     uint8 public constant LOCK_TYPE_PERMANENT = 2;
 
+    /// @notice Global flag to enable/disable all redemptions (default: enabled)
+    bool public redemptionsEnabled = true;
+
     /// @notice Mapping from address to their veHYDX badge allocation amount
     mapping(address => uint256) public veHydxFromBadges;
 
@@ -62,6 +65,7 @@ contract BasedropCheckout is AccessControl, ReentrancyGuard {
         bool isPermalock
     );
     event BadgeAllocationClaimed(address indexed user, uint256 hydrexAmount);
+    event RedemptionsToggled(bool enabled);
 
     /**
      * @notice Constructor for BasedropCheckout
@@ -90,6 +94,18 @@ contract BasedropCheckout is AccessControl, ReentrancyGuard {
         votingEscrow = IHydrexVotingEscrow(_votingEscrow);
 
         _grantRole(DEFAULT_ADMIN_ROLE, _defaultAdmin);
+    }
+
+    /*
+       Modifiers
+    */
+
+    /**
+     * @notice Modifier to check if redemptions are currently enabled
+     */
+    modifier whenRedemptionsEnabled() {
+        require(redemptionsEnabled, "Redemptions are currently disabled");
+        _;
     }
 
     /*
@@ -151,7 +167,7 @@ contract BasedropCheckout is AccessControl, ReentrancyGuard {
      * @param isPermalock Whether to create a permanent lock (true) or temporary lock (false)
      * @dev User must approve this contract to spend their hydropoints and USDC (if temporary lock)
      */
-    function redeemHydropoints(uint256 hydropointsAmount, bool isPermalock) external nonReentrant {
+    function redeemHydropoints(uint256 hydropointsAmount, bool isPermalock) external nonReentrant whenRedemptionsEnabled {
         require(hydropointsAmount > 0, "Amount must be greater than 0");
 
         uint256 hydrexAmount = calculateHydrexEquivalent(hydropointsAmount);
@@ -174,7 +190,7 @@ contract BasedropCheckout is AccessControl, ReentrancyGuard {
      * @notice Claim badge allocation and create a permanent lock
      * @dev Creates a permanent lock for the caller's badge allocation amount
      */
-    function claimBadgeAllocation() external nonReentrant {
+    function claimBadgeAllocation() external nonReentrant whenRedemptionsEnabled {
         uint256 allocation = veHydxFromBadges[msg.sender];
         require(allocation > 0, "No badge allocation available");
         require(!badgeAllocationClaimed[msg.sender], "Badge allocation already claimed");
@@ -224,5 +240,15 @@ contract BasedropCheckout is AccessControl, ReentrancyGuard {
         require(amount <= tokenContract.balanceOf(address(this)), "Insufficient balance");
 
         require(tokenContract.transfer(to, amount), "Token transfer failed");
+    }
+
+    /**
+     * @notice Toggle redemptions on/off (admin only)
+     * @param enabled Whether redemptions should be enabled
+     * @dev Only callable by addresses with DEFAULT_ADMIN_ROLE
+     */
+    function setRedemptionsEnabled(bool enabled) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        redemptionsEnabled = enabled;
+        emit RedemptionsToggled(enabled);
     }
 }
