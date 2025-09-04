@@ -52,16 +52,9 @@ contract DeployVeTokenConduit is Script {
             approvedRouters
         );
 
-        // Configure conduit approval with actions 3 and 5 and empty description
-        uint8[] memory actions = new uint8[](2);
-        actions[0] = 3;
-        actions[1] = 5;
-        veTokenConduit.adminSetConduitApprovalConfig(actions, "");
-
         vm.stopBroadcast();
 
         console2.log("\n=== Deployment Successful ===");
-        console2.log("Conduit approval config set with actions [3, 5] and empty description");
         console2.log("VeTokenConduit deployed at:", address(veTokenConduit));
         console2.log("Admin address:", admin);
         console2.log("Treasury address:", treasury);
