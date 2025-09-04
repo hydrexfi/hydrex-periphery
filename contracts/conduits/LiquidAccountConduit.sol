@@ -40,11 +40,18 @@ contract LiquidAccountConduit is AccessControl, IERC721Receiver {
      * Events
      */
 
-    event OptionTokensClaimed(address indexed user, uint256 amount);
-    event OptionTokensExercised(address indexed user, uint256 amount, uint256 nftId);
-    event VeNftTransferred(address indexed user, uint256 indexed nftId);
-    event TokensDistributed(address indexed user, address indexed token, uint256 amount);
-    event MergeExecuted(address indexed user, uint256 indexed fromTokenId, uint256 indexed toTokenId);
+    struct TokenDistribution {
+        address token;
+        uint256 amount;
+    }
+
+    event LiquidConduitJobExecuted(
+        address indexed user,
+        uint256 optionsClaimed,
+        uint256 indexed mintedNftId,
+        TokenDistribution[] otherTokens,
+        uint256 indexed mergedToTokenId
+    );
 
     /*
      * Errors
@@ -67,6 +74,10 @@ contract LiquidAccountConduit is AccessControl, IERC721Receiver {
 
         _grantRole(DEFAULT_ADMIN_ROLE, defaultAdmin);
         _grantRole(EXECUTOR_ROLE, defaultAdmin);
+
+        uint8[] memory actions = new uint8[](1);
+        actions[0] = 4;
+        IHydrexVotingEscrow(_veToken).setConduitApprovalConfig(actions, "");
 
         voter = _voter;
         optionsToken = _optionsToken;
@@ -106,20 +117,20 @@ contract LiquidAccountConduit is AccessControl, IERC721Receiver {
 
         uint256 mintedNftId;
         if (optionsClaimedAmount > 0) {
-            emit OptionTokensClaimed(_user, optionsClaimedAmount);
             mintedNftId = _convertToVeNFT(optionsClaimedAmount, _user);
 
             if (mintedNftId != 0) {
                 IERC721(veToken).safeTransferFrom(address(this), _user, mintedNftId);
-                emit VeNftTransferred(_user, mintedNftId);
             }
         }
 
-        _distributeOtherTokens(_tokens, balancesBefore, _user);
+        TokenDistribution[] memory otherTokens = _distributeOtherTokens(_tokens, balancesBefore, _user);
 
         if (mintedNftId != 0 && _mergeToTokenId != 0) {
             _mergeVeNFTs(_user, mintedNftId, _mergeToTokenId);
         }
+
+        emit LiquidConduitJobExecuted(_user, optionsClaimedAmount, mintedNftId, otherTokens, _mergeToTokenId);
     }
 
     /*
@@ -129,13 +140,11 @@ contract LiquidAccountConduit is AccessControl, IERC721Receiver {
     /**
      * @notice Exercises option tokens to create a veNFT minted to this contract
      * @param _amount Amount of option tokens to exercise
-     * @param _user The end user on whose behalf this operation occurs (for event context)
      * @return nftId The newly minted veNFT id (0 if nothing minted)
      */
-    function _convertToVeNFT(uint256 _amount, address _user) internal returns (uint256 nftId) {
+    function _convertToVeNFT(uint256 _amount, address /* _user */) internal returns (uint256 nftId) {
         if (_amount == 0) return 0;
         nftId = IOptionsToken(optionsToken).exerciseVe(_amount, address(this));
-        emit OptionTokensExercised(_user, _amount, nftId);
     }
 
     /**
@@ -160,12 +169,31 @@ contract LiquidAccountConduit is AccessControl, IERC721Receiver {
      * @param _tokens Array of all token addresses
      * @param _balancesBefore Array of balances before claiming
      * @param _user Address to send tokens to
+     * @return distributions Array of token distributions that occurred
      */
     function _distributeOtherTokens(
         address[] calldata _tokens,
         uint256[] memory _balancesBefore,
         address _user
-    ) internal {
+    ) internal returns (TokenDistribution[] memory distributions) {
+        uint256 distributionCount = 0;
+
+        // First pass: count how many distributions we'll have
+        for (uint256 i = 0; i < _tokens.length; i++) {
+            if (_tokens[i] != optionsToken) {
+                uint256 balanceAfter = IERC20(_tokens[i]).balanceOf(address(this));
+                uint256 claimedAmount = balanceAfter - _balancesBefore[i];
+                if (claimedAmount > 0) {
+                    distributionCount++;
+                }
+            }
+        }
+
+        // Initialize the distributions array
+        distributions = new TokenDistribution[](distributionCount);
+        uint256 distributionIndex = 0;
+
+        // Second pass: perform transfers and populate distributions array
         for (uint256 i = 0; i < _tokens.length; i++) {
             if (_tokens[i] != optionsToken) {
                 uint256 balanceAfter = IERC20(_tokens[i]).balanceOf(address(this));
@@ -173,7 +201,8 @@ contract LiquidAccountConduit is AccessControl, IERC721Receiver {
 
                 if (claimedAmount > 0) {
                     IERC20(_tokens[i]).transfer(_user, claimedAmount);
-                    emit TokensDistributed(_user, _tokens[i], claimedAmount);
+                    distributions[distributionIndex] = TokenDistribution({token: _tokens[i], amount: claimedAmount});
+                    distributionIndex++;
                 }
             }
         }
@@ -193,7 +222,6 @@ contract LiquidAccountConduit is AccessControl, IERC721Receiver {
         if (ownerFrom != user || ownerTo != user) revert NotTokenOwner();
 
         IHydrexVotingEscrow(veToken).merge(_from, _to);
-        emit MergeExecuted(user, _from, _to);
     }
 
     /*
@@ -208,16 +236,6 @@ contract LiquidAccountConduit is AccessControl, IERC721Receiver {
      */
     function mergeFor(address user, uint256 _from, uint256 _to) external onlyRole(EXECUTOR_ROLE) {
         _mergeVeNFTs(user, _from, _to);
-    }
-
-    /// @notice Admin wrapper to configure this conduit on the veToken contract
-    /// @param actions Array of approval actions to enable for this conduit
-    /// @param description Human-readable description
-    function adminSetConduitApprovalConfig(
-        uint8[] calldata actions,
-        string calldata description
-    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        IHydrexVotingEscrow(veToken).setConduitApprovalConfig(actions, description);
     }
 
     /**

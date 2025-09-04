@@ -110,6 +110,11 @@ contract VeTokenConduit is AccessControl {
             require(_approvedRouters[i] != address(0), "Invalid router address");
             approvedRouters.push(_approvedRouters[i]);
         }
+
+        uint8[] memory actions = new uint8[](2);
+        actions[0] = 3;
+        actions[1] = 5;
+        IHydrexVotingEscrow(_veToken).setConduitApprovalConfig(actions, "");
     }
 
     /*
