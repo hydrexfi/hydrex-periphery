@@ -54,4 +54,21 @@ interface IHydrexVotingEscrow {
      * @param _lockType The type of lock (0 = NON_PERMENANT, 1 = ROLLING, 2 = PERMENANT)
      */
     function createLockFor(uint256 _value, uint256 _lockDuration, address _to, uint8 _lockType) external;
+
+    /**
+     * @notice Creates a lock for a specified address with a specified delegatee that has claimable permissions
+     * @param _value The total assets to be locked over time
+     * @param _lockDuration Duration in seconds of the lock
+     * @param _to The receiver of the lock
+     * @param _delegatee The delegatee of the lock who also gets claim redirect approval
+     * @param _lockType Whether the lock is permanent or not
+     * @return The id of the newly created token
+     */
+    function createClaimableLockFor(
+        uint256 _value,
+        uint256 _lockDuration,
+        address _to,
+        address _delegatee,
+        uint8 _lockType
+    ) external returns (uint256);
 }
