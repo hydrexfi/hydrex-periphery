@@ -4,6 +4,7 @@
   "scripts": {
     "deploy:conduit:base": "source .env && NETWORK=base forge script script/conduits/DeployVeTokenConduit.s.sol:DeployVeTokenConduit --rpc-url https://mainnet.base.org --slow --broadcast --verify --verifier etherscan --verifier-url https://api.basescan.org/api --etherscan-api-key $BASESCAN_API_KEY",
     "deploy:liquid-conduit:base": "source .env && NETWORK=base forge script script/conduits/DeployLiquidAccountConduit.s.sol:DeployLiquidAccountConduit --rpc-url https://mainnet.base.org --slow --broadcast --verify --verifier etherscan --verifier-url https://api.basescan.org/api --etherscan-api-key $BASESCAN_API_KEY",
+    "deploy:liquid-conduit-simple:base": "source .env && NETWORK=base forge script script/conduits/DeployLiquidAccountConduitSimple.s.sol:DeployLiquidAccountConduitSimple --rpc-url https://mainnet.base.org --slow --broadcast --verify --verifier etherscan --verifier-url https://api.basescan.org/api --etherscan-api-key $BASESCAN_API_KEY",
     "deploy:partner-escrow-factory:base": "source .env && NETWORK=base forge script script/partner-escrow/DeployPartnerEscrowFactory.s.sol:DeployPartnerEscrowFactory --rpc-url https://mainnet.base.org --slow --broadcast --verify --verifier etherscan --verifier-url https://api.basescan.org/api --etherscan-api-key $BASESCAN_API_KEY",
     "deploy:hydropoints:base": "source .env && forge script script/basedrop/DeployMiningHydropoints.s.sol:DeployMiningHydropoints --rpc-url https://mainnet.base.org --slow --broadcast --verify --verifier etherscan --verifier-url https://api.basescan.org/api --etherscan-api-key $BASESCAN_API_KEY",
     "deploy:hydropoints:base-sepolia": "source .env && forge script script/basedrop/DeployMiningHydropoints.s.sol:DeployMiningHydropoints --rpc-url https://sepolia.base.org --broadcast --verify --verifier etherscan --verifier-url https://api-sepolia.basescan.org/api --etherscan-api-key $BASESCAN_API_KEY",
@@ -13,6 +14,7 @@
     "deploy:account-names:base": "source .env && NETWORK=base forge script script/extra/DeployHydrexAccountNames.s.sol:DeployHydrexAccountNames --rpc-url https://mainnet.base.org --slow --broadcast --verify --verifier etherscan --verifier-url https://api.basescan.org/api --etherscan-api-key $BASESCAN_API_KEY",
     "fork:ve-conduit": "forge script script/tests/VeTokenConduitTest.s.sol:VeTokenConduitTest --rpc-url https://mainnet.base.org",
     "fork:liquid-conduit": "forge script script/tests/LiquidAccountConduitTest.s.sol:LiquidAccountConduitTest --rpc-url https://mainnet.base.org",
+    "fork:liquid-conduit-simple": "forge script script/tests/LiquidAccountConduitSimpleTest.s.sol:LiquidAccountConduitSimpleTest --rpc-url https://mainnet.base.org",
     "fork:partner-escrow": "forge script script/tests/PartnerEscrowTest.s.sol:PartnerEscrowTest --rpc-url https://mainnet.base.org"
   },
   "dependencies": {
