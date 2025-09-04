@@ -58,6 +58,9 @@ contract BasedropCheckout is AccessControl, ReentrancyGuard {
     /// @notice Mapping to track if an address has claimed their badge allocation
     mapping(address => bool) public badgeAllocationClaimed;
 
+    /// @notice Mapping from address to current hydropoints available for liquid conversion
+    mapping(address => uint256) public currentHydropointsForLiquidConversion;
+
     event HydropointsRedeemed(
         address indexed user,
         uint256 hydropointsRedeemed,
@@ -66,6 +69,8 @@ contract BasedropCheckout is AccessControl, ReentrancyGuard {
     );
     event BadgeAllocationClaimed(address indexed user, uint256 hydrexAmount);
     event RedemptionsToggled(bool enabled);
+    event HydropointsForLiquidConversionSet(address indexed user, uint256 amount);
+    event LiquidTokensUsed(address indexed user, uint256 amount, uint256 remaining);
 
     /**
      * @notice Constructor for BasedropCheckout
@@ -157,6 +162,15 @@ contract BasedropCheckout is AccessControl, ReentrancyGuard {
         return veHydxFromBadges[user] > 0 && !badgeAllocationClaimed[user];
     }
 
+    /**
+     * @notice Get the current hydropoints available for liquid conversion
+     * @param user Address to check hydropoints for
+     * @return Current hydropoints available for liquid conversion
+     */
+    function getCurrentHydropointsForLiquidConversion(address user) external view returns (uint256) {
+        return currentHydropointsForLiquidConversion[user];
+    }
+
     /*
        User functions
     */
@@ -167,7 +181,10 @@ contract BasedropCheckout is AccessControl, ReentrancyGuard {
      * @param isPermalock Whether to create a permanent lock (true) or temporary lock (false)
      * @dev User must approve this contract to spend their hydropoints and USDC (if temporary lock)
      */
-    function redeemHydropoints(uint256 hydropointsAmount, bool isPermalock) external nonReentrant whenRedemptionsEnabled {
+    function redeemHydropoints(
+        uint256 hydropointsAmount,
+        bool isPermalock
+    ) external nonReentrant whenRedemptionsEnabled {
         require(hydropointsAmount > 0, "Amount must be greater than 0");
 
         uint256 hydrexAmount = calculateHydrexEquivalent(hydropointsAmount);
@@ -175,8 +192,17 @@ contract BasedropCheckout is AccessControl, ReentrancyGuard {
 
         uint8 lockType = isPermalock ? LOCK_TYPE_PERMANENT : LOCK_TYPE_TEMPORARY;
         if (!isPermalock) {
+            // Check and deduct hydropoints for liquid conversion
+            uint256 available = currentHydropointsForLiquidConversion[msg.sender];
+            require(available >= hydropointsAmount, "Insufficient hydropoints for liquid conversion");
+
+            // Deduct from available hydropoints
+            currentHydropointsForLiquidConversion[msg.sender] = available - hydropointsAmount;
+
             uint256 usdcRequired = calculateUsdcRequired(hydropointsAmount);
             require(usdc.transferFrom(msg.sender, address(this), usdcRequired), "USDC transfer failed");
+
+            emit LiquidTokensUsed(msg.sender, hydropointsAmount, available - hydropointsAmount);
         }
 
         hydropointsToken.redeem(msg.sender, hydropointsAmount);
@@ -221,6 +247,25 @@ contract BasedropCheckout is AccessControl, ReentrancyGuard {
         for (uint256 i = 0; i < users.length; i++) {
             require(users[i] != address(0), "Invalid user address");
             veHydxFromBadges[users[i]] = amounts[i];
+        }
+    }
+
+    /**
+     * @notice Set hydropoints for liquid conversion for multiple users (admin only)
+     * @param users Array of addresses to set hydropoints for
+     * @param amounts Array of hydropoint amounts to set
+     * @dev Only callable by addresses with DEFAULT_ADMIN_ROLE
+     */
+    function setHydropointsForLiquidConversion(
+        address[] calldata users,
+        uint256[] calldata amounts
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        require(users.length == amounts.length, "Arrays length mismatch");
+
+        for (uint256 i = 0; i < users.length; i++) {
+            require(users[i] != address(0), "Invalid user address");
+            currentHydropointsForLiquidConversion[users[i]] = amounts[i];
+            emit HydropointsForLiquidConversionSet(users[i], amounts[i]);
         }
     }
 

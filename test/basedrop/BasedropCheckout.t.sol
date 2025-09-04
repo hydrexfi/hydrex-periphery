@@ -210,6 +210,15 @@ contract BasedropCheckoutTest is Test {
         hydropoints.mint(user1, HYDROPOINTS_AMOUNT);
         usdcToken.mint(user1, USDC_AMOUNT);
 
+        // Set liquid allocation for user
+        address[] memory users = new address[](1);
+        uint256[] memory amounts = new uint256[](1);
+        users[0] = user1;
+        amounts[0] = HYDROPOINTS_AMOUNT; // Enough for the test
+        
+        vm.prank(admin);
+        checkout.setHydropointsForLiquidConversion(users, amounts);
+
         // User approves checkout to spend USDC
         vm.prank(user1);
         usdcToken.approve(address(checkout), USDC_AMOUNT);
@@ -237,6 +246,15 @@ contract BasedropCheckoutTest is Test {
         vm.prank(owner);
         hydropoints.mint(user1, HYDROPOINTS_AMOUNT);
         usdcToken.mint(user1, USDC_AMOUNT);
+
+        // Set liquid allocation for user
+        address[] memory users = new address[](1);
+        uint256[] memory amounts = new uint256[](1);
+        users[0] = user1;
+        amounts[0] = HYDROPOINTS_AMOUNT;
+        
+        vm.prank(admin);
+        checkout.setHydropointsForLiquidConversion(users, amounts);
 
         vm.prank(user1);
         usdcToken.approve(address(checkout), USDC_AMOUNT);
@@ -352,6 +370,15 @@ contract BasedropCheckoutTest is Test {
         hydropoints.mint(user1, HYDROPOINTS_AMOUNT);
         hydropoints.mint(user2, HYDROPOINTS_AMOUNT * 2);
         vm.stopPrank();
+
+        // Set liquid allocation for user2 (user1 doesn't need it for permanent lock)
+        address[] memory users = new address[](1);
+        uint256[] memory amounts = new uint256[](1);
+        users[0] = user2;
+        amounts[0] = HYDROPOINTS_AMOUNT * 2;
+        
+        vm.prank(admin);
+        checkout.setHydropointsForLiquidConversion(users, amounts);
 
         // User1 creates permanent lock
         vm.prank(user1);
@@ -636,5 +663,267 @@ contract BasedropCheckoutTest is Test {
         
         MockVotingEscrow.Lock memory lock = votingEscrow.getLastLock(user1);
         assertEq(lock.amount, updatedAllocation);
+    }
+
+    /* Liquid allocation tests */
+
+    function testSetHydropointsForLiquidConversion() public {
+        uint256 allocation = 500 * 10**18; // 500 hydropoints
+        
+        address[] memory users = new address[](1);
+        uint256[] memory amounts = new uint256[](1);
+        users[0] = user1;
+        amounts[0] = allocation;
+        
+        vm.prank(admin);
+        checkout.setHydropointsForLiquidConversion(users, amounts);
+        
+        assertEq(checkout.getCurrentHydropointsForLiquidConversion(user1), allocation);
+        assertEq(checkout.currentHydropointsForLiquidConversion(user1), allocation);
+    }
+
+    function testSetHydropointsForLiquidConversionMultiple() public {
+        address[] memory users = new address[](3);
+        uint256[] memory amounts = new uint256[](3);
+        
+        users[0] = user1;
+        users[1] = user2;
+        users[2] = makeAddr("user3");
+        
+        amounts[0] = 100 * 10**18;
+        amounts[1] = 200 * 10**18;
+        amounts[2] = 300 * 10**18;
+        
+        vm.prank(admin);
+        checkout.setHydropointsForLiquidConversion(users, amounts);
+        
+        assertEq(checkout.getCurrentHydropointsForLiquidConversion(user1), 100 * 10**18);
+        assertEq(checkout.getCurrentHydropointsForLiquidConversion(user2), 200 * 10**18);
+        assertEq(checkout.getCurrentHydropointsForLiquidConversion(makeAddr("user3")), 300 * 10**18);
+    }
+
+    function testSetHydropointsForLiquidConversionEmitsEvent() public {
+        uint256 allocation = 150 * 10**18;
+        
+        address[] memory users = new address[](1);
+        uint256[] memory amounts = new uint256[](1);
+        users[0] = user1;
+        amounts[0] = allocation;
+        
+        vm.expectEmit(true, false, false, true);
+        emit BasedropCheckout.HydropointsForLiquidConversionSet(user1, allocation);
+        
+        vm.prank(admin);
+        checkout.setHydropointsForLiquidConversion(users, amounts);
+    }
+
+    function test_RevertWhen_SetLiquidAllocationArrayMismatch() public {
+        address[] memory users = new address[](2);
+        uint256[] memory amounts = new uint256[](1);
+        
+        users[0] = user1;
+        users[1] = user2;
+        amounts[0] = 100 * 10**18;
+        
+        vm.prank(admin);
+        vm.expectRevert("Arrays length mismatch");
+        checkout.setHydropointsForLiquidConversion(users, amounts);
+    }
+
+    function test_RevertWhen_SetLiquidAllocationInvalidAddress() public {
+        address[] memory users = new address[](1);
+        uint256[] memory amounts = new uint256[](1);
+        
+        users[0] = address(0);
+        amounts[0] = 100 * 10**18;
+        
+        vm.prank(admin);
+        vm.expectRevert("Invalid user address");
+        checkout.setHydropointsForLiquidConversion(users, amounts);
+    }
+
+    function test_RevertWhen_NonAdminSetsLiquidAllocation() public {
+        address[] memory users = new address[](1);
+        uint256[] memory amounts = new uint256[](1);
+        users[0] = user1;
+        amounts[0] = 100 * 10**18;
+        
+        vm.prank(user1);
+        vm.expectRevert();
+        checkout.setHydropointsForLiquidConversion(users, amounts);
+    }
+
+    function test_RevertWhen_InsufficientLiquidAllocation() public {
+        // Setup: user has hydropoints but no liquid allocation
+        vm.prank(owner);
+        hydropoints.mint(user1, HYDROPOINTS_AMOUNT);
+        usdcToken.mint(user1, USDC_AMOUNT);
+        
+        vm.prank(user1);
+        usdcToken.approve(address(checkout), USDC_AMOUNT);
+        
+        vm.prank(user1);
+        vm.expectRevert("Insufficient hydropoints for liquid conversion");
+        checkout.redeemHydropoints(HYDROPOINTS_AMOUNT, false);
+    }
+
+    function test_RevertWhen_ExceedsLiquidAllocation() public {
+        uint256 smallAllocation = 500 * 10**18; // Less than HYDROPOINTS_AMOUNT
+        
+        // Setup: user has hydropoints and small liquid allocation
+        vm.prank(owner);
+        hydropoints.mint(user1, HYDROPOINTS_AMOUNT);
+        usdcToken.mint(user1, USDC_AMOUNT);
+        
+        address[] memory users = new address[](1);
+        uint256[] memory amounts = new uint256[](1);
+        users[0] = user1;
+        amounts[0] = smallAllocation;
+        
+        vm.prank(admin);
+        checkout.setHydropointsForLiquidConversion(users, amounts);
+        
+        vm.prank(user1);
+        usdcToken.approve(address(checkout), USDC_AMOUNT);
+        
+        vm.prank(user1);
+        vm.expectRevert("Insufficient hydropoints for liquid conversion");
+        checkout.redeemHydropoints(HYDROPOINTS_AMOUNT, false); // Trying to redeem more than allocation
+    }
+
+    function testLiquidAllocationDeduction() public {
+        uint256 initialAllocation = 1500 * 10**18;
+        uint256 redeemAmount = 500 * 10**18;
+        uint256 usdcRequired = checkout.calculateUsdcRequired(redeemAmount);
+        
+        // Setup
+        vm.prank(owner);
+        hydropoints.mint(user1, redeemAmount);
+        usdcToken.mint(user1, usdcRequired);
+        
+        address[] memory users = new address[](1);
+        uint256[] memory amounts = new uint256[](1);
+        users[0] = user1;
+        amounts[0] = initialAllocation;
+        
+        vm.prank(admin);
+        checkout.setHydropointsForLiquidConversion(users, amounts);
+        
+        // Verify initial allocation
+        assertEq(checkout.getCurrentHydropointsForLiquidConversion(user1), initialAllocation);
+        
+        vm.prank(user1);
+        usdcToken.approve(address(checkout), usdcRequired);
+        
+        // Redeem some hydropoints
+        vm.prank(user1);
+        checkout.redeemHydropoints(redeemAmount, false);
+        
+        // Verify allocation was deducted
+        assertEq(checkout.getCurrentHydropointsForLiquidConversion(user1), initialAllocation - redeemAmount);
+    }
+
+    function testLiquidTokensUsedEvent() public {
+        uint256 allocation = 1000 * 10**18;
+        uint256 redeemAmount = 300 * 10**18;
+        uint256 usdcRequired = checkout.calculateUsdcRequired(redeemAmount);
+        
+        // Setup
+        vm.prank(owner);
+        hydropoints.mint(user1, redeemAmount);
+        usdcToken.mint(user1, usdcRequired);
+        
+        address[] memory users = new address[](1);
+        uint256[] memory amounts = new uint256[](1);
+        users[0] = user1;
+        amounts[0] = allocation;
+        
+        vm.prank(admin);
+        checkout.setHydropointsForLiquidConversion(users, amounts);
+        
+        vm.prank(user1);
+        usdcToken.approve(address(checkout), usdcRequired);
+        
+        // Expect LiquidTokensUsed event
+        vm.expectEmit(true, false, false, true);
+        emit BasedropCheckout.LiquidTokensUsed(user1, redeemAmount, allocation - redeemAmount);
+        
+        vm.prank(user1);
+        checkout.redeemHydropoints(redeemAmount, false);
+    }
+
+    function testMultipleLiquidRedemptions() public {
+        uint256 allocation = 1500 * 10**18;
+        uint256 firstRedeem = 500 * 10**18;
+        uint256 secondRedeem = 300 * 10**18;
+        uint256 totalUsdcRequired = checkout.calculateUsdcRequired(firstRedeem + secondRedeem);
+        
+        // Setup
+        vm.prank(owner);
+        hydropoints.mint(user1, firstRedeem + secondRedeem);
+        usdcToken.mint(user1, totalUsdcRequired);
+        
+        address[] memory users = new address[](1);
+        uint256[] memory amounts = new uint256[](1);
+        users[0] = user1;
+        amounts[0] = allocation;
+        
+        vm.prank(admin);
+        checkout.setHydropointsForLiquidConversion(users, amounts);
+        
+        vm.prank(user1);
+        usdcToken.approve(address(checkout), totalUsdcRequired);
+        
+        // First redemption
+        vm.prank(user1);
+        checkout.redeemHydropoints(firstRedeem, false);
+        assertEq(checkout.getCurrentHydropointsForLiquidConversion(user1), allocation - firstRedeem);
+        
+        // Second redemption
+        vm.prank(user1);
+        checkout.redeemHydropoints(secondRedeem, false);
+        assertEq(checkout.getCurrentHydropointsForLiquidConversion(user1), allocation - firstRedeem - secondRedeem);
+    }
+
+    function testUpdateLiquidAllocation() public {
+        uint256 originalAllocation = 500 * 10**18;
+        uint256 updatedAllocation = 800 * 10**18;
+        
+        address[] memory users = new address[](1);
+        uint256[] memory amounts = new uint256[](1);
+        users[0] = user1;
+        amounts[0] = originalAllocation;
+        
+        // Set initial allocation
+        vm.prank(admin);
+        checkout.setHydropointsForLiquidConversion(users, amounts);
+        assertEq(checkout.getCurrentHydropointsForLiquidConversion(user1), originalAllocation);
+        
+        // Update allocation
+        amounts[0] = updatedAllocation;
+        vm.prank(admin);
+        checkout.setHydropointsForLiquidConversion(users, amounts);
+        assertEq(checkout.getCurrentHydropointsForLiquidConversion(user1), updatedAllocation);
+    }
+
+    function testGetCurrentHydropointsForLiquidConversionZero() public view {
+        assertEq(checkout.getCurrentHydropointsForLiquidConversion(user1), 0);
+    }
+
+    function testPermanentLockDoesNotRequireLiquidAllocation() public {
+        // User has no liquid allocation but should be able to create permanent lock
+        vm.prank(owner);
+        hydropoints.mint(user1, HYDROPOINTS_AMOUNT);
+        
+        // Verify no liquid allocation
+        assertEq(checkout.getCurrentHydropointsForLiquidConversion(user1), 0);
+        
+        // Should succeed for permanent lock
+        vm.prank(user1);
+        checkout.redeemHydropoints(HYDROPOINTS_AMOUNT, true);
+        
+        // Verify lock was created
+        MockVotingEscrow.Lock memory lock = votingEscrow.getLastLock(user1);
+        assertEq(lock.lockType, 2); // LOCK_TYPE_PERMANENT
     }
 }
