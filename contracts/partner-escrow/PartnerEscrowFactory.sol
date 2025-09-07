@@ -35,8 +35,20 @@ contract PartnerEscrowFactory is AccessControl {
     mapping(address => bool) public isDeployedEscrow;
     /// @notice Mapping from deployed escrow address to the escrowed tokenId
     mapping(address => uint256) public escrowToTokenId;
+    /// @notice Array of default approved conduits applied to new escrows
+    address[] public defaultApprovedConduits;
+    /// @notice Mapping for quick lookup of default approved conduits
+    mapping(address => bool) public isDefaultApprovedConduit;
 
-    event EscrowDeployed(address indexed escrow, address indexed admin, address indexed partner, address voter, uint256 tokenId);
+    event EscrowDeployed(
+        address indexed escrow,
+        address indexed admin,
+        address indexed partner,
+        address voter,
+        uint256 tokenId
+    );
+
+    /* Constructor */
 
     /**
      * @notice Constructor sets voter, veToken and grants roles
@@ -52,42 +64,7 @@ contract PartnerEscrowFactory is AccessControl {
         _grantRole(DEPLOYER_ROLE, msg.sender);
     }
 
-    /**
-     * @notice Deploy a new PartnerEscrow contract and pull the veNFT in a single transaction
-     * @param _admin Admin address for the escrow contract (current owner of `_tokenId`)
-     * @param _partner Partner address for the escrow contract
-     * @param _tokenId veNFT tokenId to transfer into escrow
-     * @param _vestingPeriod Vesting period in seconds
-     * @return escrow Address of the deployed escrow contract
-     */
-    function deployEscrow(
-        address _admin,
-        address _partner,
-        uint256 _tokenId,
-        uint256 _vestingPeriod
-    ) external onlyRole(DEPLOYER_ROLE) returns (address escrow) {
-        require(_admin != address(0), "Invalid admin address");
-        require(_partner != address(0), "Invalid partner address");
-        require(_vestingPeriod > 0, "Invalid vesting period");
-
-        require(
-            IERC721(veToken).getApproved(_tokenId) == address(this) ||
-                IERC721(veToken).isApprovedForAll(_admin, address(this)),
-            "Factory not approved"
-        );
-
-        escrow = address(new PartnerEscrow(_admin, _partner, voter, veToken));
-
-        deployedEscrows.push(escrow);
-        partnerToEscrows[_partner].push(escrow);
-        isDeployedEscrow[escrow] = true;
-        escrowToTokenId[escrow] = _tokenId;
-
-        IERC721(veToken).safeTransferFrom(_admin, escrow, _tokenId);
-        PartnerEscrow(payable(escrow)).factoryFinalizeDeposit(_tokenId, _vestingPeriod);
-
-        emit EscrowDeployed(escrow, _admin, _partner, voter, _tokenId);
-    }
+    /* View Functions */
 
     /**
      * @notice Get the number of deployed escrows
@@ -130,6 +107,111 @@ contract PartnerEscrowFactory is AccessControl {
      */
     function isEscrowFromFactory(address _escrow) external view returns (bool isEscrow) {
         return isDeployedEscrow[_escrow];
+    }
+
+    /**
+     * @notice Get all default approved conduits
+     * @return conduits Array of default approved conduit addresses
+     */
+    function getDefaultApprovedConduits() external view returns (address[] memory conduits) {
+        return defaultApprovedConduits;
+    }
+
+    /**
+     * @notice Get the number of default approved conduits
+     * @return count Number of default approved conduits
+     */
+    function getDefaultApprovedConduitsCount() external view returns (uint256 count) {
+        return defaultApprovedConduits.length;
+    }
+
+    /* Deploy Functions */
+
+    /**
+     * @notice Deploy a new PartnerEscrow contract and pull the veNFT in a single transaction
+     * @param _admin Admin address for the escrow contract (current owner of `_tokenId`)
+     * @param _partner Partner address for the escrow contract
+     * @param _tokenId veNFT tokenId to transfer into escrow
+     * @param _vestingPeriod Vesting period in seconds
+     * @return escrow Address of the deployed escrow contract
+     */
+    function deployEscrow(
+        address _admin,
+        address _partner,
+        uint256 _tokenId,
+        uint256 _vestingPeriod
+    ) external onlyRole(DEPLOYER_ROLE) returns (address escrow) {
+        require(_admin != address(0), "Invalid admin address");
+        require(_partner != address(0), "Invalid partner address");
+        require(_vestingPeriod > 0, "Invalid vesting period");
+
+        require(
+            IERC721(veToken).getApproved(_tokenId) == address(this) ||
+                IERC721(veToken).isApprovedForAll(_admin, address(this)),
+            "Factory not approved"
+        );
+
+        escrow = address(new PartnerEscrow(_admin, _partner, voter, veToken));
+
+        deployedEscrows.push(escrow);
+        partnerToEscrows[_partner].push(escrow);
+        isDeployedEscrow[escrow] = true;
+        escrowToTokenId[escrow] = _tokenId;
+
+        IERC721(veToken).safeTransferFrom(_admin, escrow, _tokenId);
+        PartnerEscrow(payable(escrow)).factoryFinalizeDeposit(_tokenId, _vestingPeriod);
+
+        // Set default approved conduits on the new escrow
+        if (defaultApprovedConduits.length > 0) {
+            bool[] memory approvals = new bool[](defaultApprovedConduits.length);
+            for (uint256 i = 0; i < defaultApprovedConduits.length; i++) {
+                approvals[i] = true;
+            }
+            PartnerEscrow(payable(escrow)).batchSetConduitApproval(defaultApprovedConduits, approvals);
+        }
+
+        emit EscrowDeployed(escrow, _admin, _partner, voter, _tokenId);
+    }
+
+    /* Admin Functions */
+
+    /**
+     * @notice Add or remove a default approved conduit
+     * @param conduitAddress Address of the conduit
+     * @param approved True to approve, false to remove
+     */
+    function setDefaultApprovedConduit(address conduitAddress, bool approved) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        require(conduitAddress != address(0), "Invalid conduit address");
+
+        if (approved && !isDefaultApprovedConduit[conduitAddress]) {
+            defaultApprovedConduits.push(conduitAddress);
+            isDefaultApprovedConduit[conduitAddress] = true;
+        } else if (!approved && isDefaultApprovedConduit[conduitAddress]) {
+            // Remove from array
+            for (uint256 i = 0; i < defaultApprovedConduits.length; i++) {
+                if (defaultApprovedConduits[i] == conduitAddress) {
+                    defaultApprovedConduits[i] = defaultApprovedConduits[defaultApprovedConduits.length - 1];
+                    defaultApprovedConduits.pop();
+                    break;
+                }
+            }
+            isDefaultApprovedConduit[conduitAddress] = false;
+        }
+    }
+
+    /**
+     * @notice Batch set default approved conduits
+     * @param conduitAddresses Array of conduit addresses
+     * @param approved Array of approval statuses
+     */
+    function batchSetDefaultApprovedConduits(
+        address[] calldata conduitAddresses,
+        bool[] calldata approved
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        require(conduitAddresses.length == approved.length, "Array length mismatch");
+        for (uint256 i = 0; i < conduitAddresses.length; i++) {
+            this.setDefaultApprovedConduit(conduitAddresses[i], approved[i]);
+        }
     }
 
     /**
