@@ -7,9 +7,24 @@ import {PartnerEscrowFactory} from "../../contracts/partner-escrow/PartnerEscrow
 
 /**
  * @title DeployPartnerEscrowFactory
- * @dev Script to deploy PartnerEscrowFactory contract (mirrors style of other deploy scripts)
+ * @dev Script to deploy PartnerEscrowFactory contract with predefined approved conduits
  */
 contract DeployPartnerEscrowFactory is Script {
+    /* Configuration */
+
+    /**
+     * @notice Get default approved conduit for the network
+     * @param networkName Name of the network
+     * @return conduit Default conduit address to approve, or address(0) if none
+     */
+    function _getDefaultApprovedConduit(string memory networkName) internal pure returns (address conduit) {
+        if (keccak256(bytes(networkName)) == keccak256(bytes("base"))) {
+            conduit = 0xf2d9EaDCb3ec51577a1eAA2A1d37a12EFb9F3276; // TODO: This is a test conduit VeTokenConduit
+        } else {
+            conduit = address(0); // No default for other networks
+        }
+    }
+
     function run() public {
         uint256 deployerKey = vm.envUint("DEPLOYER_KEY");
         address deployer = vm.addr(deployerKey);
@@ -19,25 +34,35 @@ contract DeployPartnerEscrowFactory is Script {
         address voter = vm.envAddress("VOTER");
         address veToken = vm.envAddress("VE_TOKEN");
 
+        // Get default approved conduit for this network
+        address defaultConduit = _getDefaultApprovedConduit(networkName);
+
         console2.log("=== PartnerEscrowFactory Deployment ===");
         console2.log("Network:", networkName);
         console2.log("Deployer:", deployer);
         console2.log("Voter:", voter);
         console2.log("veToken:", veToken);
+        console2.log("Default conduit:", defaultConduit);
 
         vm.startBroadcast(deployerKey);
 
         PartnerEscrowFactory factory = new PartnerEscrowFactory(voter, veToken);
+
+        // Set default approved conduit
+        if (defaultConduit != address(0)) {
+            factory.setDefaultApprovedConduit(defaultConduit, true);
+            console2.log("Default approved conduit set");
+        }
 
         vm.stopBroadcast();
 
         console2.log("\n=== Deployment Successful ===");
         console2.log("PartnerEscrowFactory deployed at:", address(factory));
 
-        _saveDeployment(networkName, address(factory));
+        _saveDeployment(networkName, address(factory), defaultConduit);
     }
 
-    function _saveDeployment(string memory networkName, address factoryAddress) internal {
+    function _saveDeployment(string memory networkName, address factoryAddress, address defaultConduit) internal {
         string memory deploymentPath = string.concat(
             "deployments/",
             networkName,
@@ -54,7 +79,8 @@ contract DeployPartnerEscrowFactory is Script {
         string memory contractsJson = "contracts";
         string memory entryJson = "PartnerEscrowFactory";
         vm.serializeAddress(entryJson, "address", factoryAddress);
-        string memory entryData = vm.serializeString(entryJson, "name", "PartnerEscrowFactory");
+        vm.serializeString(entryJson, "name", "PartnerEscrowFactory");
+        string memory entryData = vm.serializeAddress(entryJson, "defaultApprovedConduit", defaultConduit);
 
         string memory contractData = vm.serializeString(contractsJson, "PartnerEscrowFactory", entryData);
         string memory finalJson = vm.serializeString(json, "contracts", contractData);

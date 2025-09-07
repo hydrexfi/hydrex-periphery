@@ -38,11 +38,14 @@ contract PartnerEscrow is AccessControl, IERC721Receiver {
     uint256 public vestingPeriod;
     /// @notice Timestamp when veNFT was deposited
     uint256 public depositTime;
+    /// @notice Mapping of conduit addresses that are approved for use
+    mapping(address => bool) public approvedConduits;
 
     event VeTokenDeposited(address indexed veToken, uint256 indexed tokenId, uint256 depositTime);
     event VeTokenWithdrawn(address indexed veToken, uint256 indexed tokenId, address indexed to);
-    event RewardsClaimed(address[] tokens, uint256[] amounts);
-    event RewardsForwarded(address indexed partner, address[] tokens, uint256[] amounts);
+    event RewardsClaimedAndForwarded(address indexed partner, address[] tokens, uint256[] amounts);
+    event ConduitApprovalUpdated(address indexed conduit, bool approved);
+    event ConduitApprovalSet(address indexed conduit, uint256 indexed tokenId, bool approved);
 
     /**
      * @notice Constructor sets up roles and configuration
@@ -105,7 +108,9 @@ contract PartnerEscrow is AccessControl, IERC721Receiver {
         address conduitAddress,
         bool approve
     ) external onlyRole(PARTNER_ROLE) hasVeToken {
+        require(approvedConduits[conduitAddress], "Conduit not approved by admin");
         IHydrexVotingEscrow(veToken).setConduitApproval(conduitAddress, tokenId, approve);
+        emit ConduitApprovalSet(conduitAddress, tokenId, approve);
     }
 
     /**
@@ -147,8 +152,7 @@ contract PartnerEscrow is AccessControl, IERC721Receiver {
             }
         }
 
-        emit RewardsClaimed(claimTokens, amountsReceived);
-        emit RewardsForwarded(msg.sender, claimTokens, amountsReceived);
+        emit RewardsClaimedAndForwarded(msg.sender, claimTokens, amountsReceived);
     }
 
     /**
@@ -183,6 +187,36 @@ contract PartnerEscrow is AccessControl, IERC721Receiver {
         vestingPeriod = _vestingPeriod;
         depositTime = block.timestamp;
         emit VeTokenDeposited(veToken, _tokenId, depositTime);
+    }
+
+    /**
+     * @notice Admin or factory can approve or revoke conduits for use by partners
+     * @param conduitAddress Address of the conduit to approve/revoke
+     * @param approved True to approve, false to revoke
+     */
+    function setConduitApproval(address conduitAddress, bool approved) external {
+        require(hasRole(DEFAULT_ADMIN_ROLE, msg.sender) || hasRole(FACTORY_ROLE, msg.sender), "Access denied");
+        require(conduitAddress != address(0), "Invalid conduit address");
+        approvedConduits[conduitAddress] = approved;
+        emit ConduitApprovalUpdated(conduitAddress, approved);
+    }
+
+    /**
+     * @notice Admin or factory can batch approve or revoke multiple conduits
+     * @param conduitAddresses Array of conduit addresses
+     * @param approved Array of approval statuses
+     */
+    function batchSetConduitApproval(
+        address[] calldata conduitAddresses, 
+        bool[] calldata approved
+    ) external {
+        require(hasRole(DEFAULT_ADMIN_ROLE, msg.sender) || hasRole(FACTORY_ROLE, msg.sender), "Access denied");
+        require(conduitAddresses.length == approved.length, "Array length mismatch");
+        for (uint256 i = 0; i < conduitAddresses.length; i++) {
+            require(conduitAddresses[i] != address(0), "Invalid conduit address");
+            approvedConduits[conduitAddresses[i]] = approved[i];
+            emit ConduitApprovalUpdated(conduitAddresses[i], approved[i]);
+        }
     }
 
     /**
