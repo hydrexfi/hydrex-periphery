@@ -2,6 +2,7 @@
   "name": "hydrex-periphery",
   "author": "Hydrex Association",
   "scripts": {
+    "deploy:ve-conduit-factory:base": "source .env && NETWORK=base forge script script/conduits/DeployVeConduitFactory.s.sol:DeployVeConduitFactory --rpc-url https://mainnet.base.org --slow --broadcast --verify --verifier etherscan --verifier-url https://api.basescan.org/api --etherscan-api-key $BASESCAN_API_KEY",
     "deploy:conduit:base": "source .env && NETWORK=base forge script script/conduits/DeployVeTokenConduit.s.sol:DeployVeTokenConduit --rpc-url https://mainnet.base.org --slow --broadcast --verify --verifier etherscan --verifier-url https://api.basescan.org/api --etherscan-api-key $BASESCAN_API_KEY",
     "deploy:liquid-conduit:base": "source .env && NETWORK=base forge script script/conduits/DeployLiquidAccountConduit.s.sol:DeployLiquidAccountConduit --rpc-url https://mainnet.base.org --slow --broadcast --verify --verifier etherscan --verifier-url https://api.basescan.org/api --etherscan-api-key $BASESCAN_API_KEY",
     "deploy:liquid-conduit-simple:base": "source .env && NETWORK=base forge script script/conduits/DeployLiquidAccountConduitSimple.s.sol:DeployLiquidAccountConduitSimple --rpc-url https://mainnet.base.org --slow --broadcast --verify --verifier etherscan --verifier-url https://api.basescan.org/api --etherscan-api-key $BASESCAN_API_KEY",
