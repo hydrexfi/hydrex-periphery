@@ -17,6 +17,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
 import {IVoter} from "../interfaces/IVoter.sol";
 import {IHydrexVotingEscrow} from "../interfaces/IHydrexVotingEscrow.sol";
+import {VeConduitFactory} from "../conduits/VeConduitFactory.sol";
 
 /**
  * @title PartnerEscrow
@@ -40,6 +41,8 @@ contract PartnerEscrow is AccessControl, IERC721Receiver {
     uint256 public depositTime;
     /// @notice Mapping of conduit addresses that are approved for use
     mapping(address => bool) public approvedConduits;
+    /// @notice Address of the VeConduitFactory whose conduits are auto-whitelisted
+    address public veConduitFactory;
 
     event VeTokenDeposited(address indexed veToken, uint256 indexed tokenId, uint256 depositTime);
     event VeTokenWithdrawn(address indexed veToken, uint256 indexed tokenId, address indexed to);
@@ -53,18 +56,20 @@ contract PartnerEscrow is AccessControl, IERC721Receiver {
      * @param _partner Partner address with voting/claiming rights
      * @param _voter Voter contract address for reward claims
      * @param _veToken Address of the veNFT contract (immutable per escrow lifetime)
+     * @param _veConduitFactory Address of the VeConduitFactory whose conduits are allowed
      */
-    constructor(address _admin, address _partner, address _voter, address _veToken) {
+    constructor(address _admin, address _partner, address _voter, address _veToken, address _veConduitFactory) {
         _grantRole(DEFAULT_ADMIN_ROLE, _admin);
         _grantRole(PARTNER_ROLE, _partner);
         _grantRole(FACTORY_ROLE, msg.sender);
 
         voter = _voter;
         veToken = _veToken;
+        veConduitFactory = _veConduitFactory;
     }
 
     /*
-        Modifiers
+        Modifiers & View Functions
     */
 
     /**
@@ -73,6 +78,19 @@ contract PartnerEscrow is AccessControl, IERC721Receiver {
     modifier hasVeToken() {
         require(veToken != address(0) && IERC721(veToken).ownerOf(tokenId) == address(this), "No veNFT held");
         _;
+    }
+
+    /**
+     * @notice Returns true if a conduit is allowed either by admin approval or by factory whitelist
+     */
+    function isConduitAllowed(address conduit) public view returns (bool) {
+        if (approvedConduits[conduit]) return true;
+        return _isConduitWhitelistedByFactory(conduit);
+    }
+
+    function _isConduitWhitelistedByFactory(address conduit) internal view returns (bool) {
+        if (veConduitFactory == address(0)) return false;
+        return VeConduitFactory(veConduitFactory).isFactoryConduit(conduit);
     }
 
     /*  
@@ -108,7 +126,7 @@ contract PartnerEscrow is AccessControl, IERC721Receiver {
         address conduitAddress,
         bool approve
     ) external onlyRole(PARTNER_ROLE) hasVeToken {
-        require(approvedConduits[conduitAddress], "Conduit not approved by admin");
+        require(isConduitAllowed(conduitAddress), "Conduit not allowed");
         IHydrexVotingEscrow(veToken).setConduitApproval(conduitAddress, tokenId, approve);
         emit ConduitApprovalSet(conduitAddress, tokenId, approve);
     }
@@ -206,10 +224,7 @@ contract PartnerEscrow is AccessControl, IERC721Receiver {
      * @param conduitAddresses Array of conduit addresses
      * @param approved Array of approval statuses
      */
-    function batchSetConduitApproval(
-        address[] calldata conduitAddresses, 
-        bool[] calldata approved
-    ) external {
+    function batchSetConduitApproval(address[] calldata conduitAddresses, bool[] calldata approved) external {
         require(hasRole(DEFAULT_ADMIN_ROLE, msg.sender) || hasRole(FACTORY_ROLE, msg.sender), "Access denied");
         require(conduitAddresses.length == approved.length, "Array length mismatch");
         for (uint256 i = 0; i < conduitAddresses.length; i++) {

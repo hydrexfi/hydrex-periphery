@@ -26,6 +26,8 @@ contract PartnerEscrowFactory is AccessControl {
     address public immutable voter;
     /// @notice veNFT contract used for all escrows
     address public immutable veToken;
+    /// @notice VeConduitFactory whose conduits are auto-whitelisted in new escrows
+    address public immutable veConduitFactory;
 
     /// @notice Array of all deployed escrow contract addresses
     address[] public deployedEscrows;
@@ -35,10 +37,6 @@ contract PartnerEscrowFactory is AccessControl {
     mapping(address => bool) public isDeployedEscrow;
     /// @notice Mapping from deployed escrow address to the escrowed tokenId
     mapping(address => uint256) public escrowToTokenId;
-    /// @notice Array of default approved conduits applied to new escrows
-    address[] public defaultApprovedConduits;
-    /// @notice Mapping for quick lookup of default approved conduits
-    mapping(address => bool) public isDefaultApprovedConduit;
 
     event EscrowDeployed(
         address indexed escrow,
@@ -51,15 +49,18 @@ contract PartnerEscrowFactory is AccessControl {
     /* Constructor */
 
     /**
-     * @notice Constructor sets voter, veToken and grants roles
+     * @notice Constructor sets voter, veToken, veConduitFactory and grants roles
      * @param _voter Voter contract address to be injected into all escrows
      * @param _veToken veNFT contract address used across all escrows
+     * @param _veConduitFactory VeConduitFactory address whose deployments are allowed
      */
-    constructor(address _voter, address _veToken) {
+    constructor(address _voter, address _veToken, address _veConduitFactory) {
         require(_voter != address(0), "Invalid voter");
         require(_veToken != address(0), "Invalid veToken");
+        require(_veConduitFactory != address(0), "Invalid veConduitFactory");
         voter = _voter;
         veToken = _veToken;
+        veConduitFactory = _veConduitFactory;
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
         _grantRole(DEPLOYER_ROLE, msg.sender);
     }
@@ -109,22 +110,6 @@ contract PartnerEscrowFactory is AccessControl {
         return isDeployedEscrow[_escrow];
     }
 
-    /**
-     * @notice Get all default approved conduits
-     * @return conduits Array of default approved conduit addresses
-     */
-    function getDefaultApprovedConduits() external view returns (address[] memory conduits) {
-        return defaultApprovedConduits;
-    }
-
-    /**
-     * @notice Get the number of default approved conduits
-     * @return count Number of default approved conduits
-     */
-    function getDefaultApprovedConduitsCount() external view returns (uint256 count) {
-        return defaultApprovedConduits.length;
-    }
-
     /* Deploy Functions */
 
     /**
@@ -151,7 +136,7 @@ contract PartnerEscrowFactory is AccessControl {
             "Factory not approved"
         );
 
-        escrow = address(new PartnerEscrow(_admin, _partner, voter, veToken));
+        escrow = address(new PartnerEscrow(_admin, _partner, voter, veToken, veConduitFactory));
 
         deployedEscrows.push(escrow);
         partnerToEscrows[_partner].push(escrow);
@@ -161,58 +146,10 @@ contract PartnerEscrowFactory is AccessControl {
         IERC721(veToken).safeTransferFrom(_admin, escrow, _tokenId);
         PartnerEscrow(payable(escrow)).factoryFinalizeDeposit(_tokenId, _vestingPeriod);
 
-        // Set default approved conduits on the new escrow
-        if (defaultApprovedConduits.length > 0) {
-            bool[] memory approvals = new bool[](defaultApprovedConduits.length);
-            for (uint256 i = 0; i < defaultApprovedConduits.length; i++) {
-                approvals[i] = true;
-            }
-            PartnerEscrow(payable(escrow)).batchSetConduitApproval(defaultApprovedConduits, approvals);
-        }
-
         emit EscrowDeployed(escrow, _admin, _partner, voter, _tokenId);
     }
 
     /* Admin Functions */
-
-    /**
-     * @notice Add or remove a default approved conduit
-     * @param conduitAddress Address of the conduit
-     * @param approved True to approve, false to remove
-     */
-    function setDefaultApprovedConduit(address conduitAddress, bool approved) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        require(conduitAddress != address(0), "Invalid conduit address");
-
-        if (approved && !isDefaultApprovedConduit[conduitAddress]) {
-            defaultApprovedConduits.push(conduitAddress);
-            isDefaultApprovedConduit[conduitAddress] = true;
-        } else if (!approved && isDefaultApprovedConduit[conduitAddress]) {
-            // Remove from array
-            for (uint256 i = 0; i < defaultApprovedConduits.length; i++) {
-                if (defaultApprovedConduits[i] == conduitAddress) {
-                    defaultApprovedConduits[i] = defaultApprovedConduits[defaultApprovedConduits.length - 1];
-                    defaultApprovedConduits.pop();
-                    break;
-                }
-            }
-            isDefaultApprovedConduit[conduitAddress] = false;
-        }
-    }
-
-    /**
-     * @notice Batch set default approved conduits
-     * @param conduitAddresses Array of conduit addresses
-     * @param approved Array of approval statuses
-     */
-    function batchSetDefaultApprovedConduits(
-        address[] calldata conduitAddresses,
-        bool[] calldata approved
-    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        require(conduitAddresses.length == approved.length, "Array length mismatch");
-        for (uint256 i = 0; i < conduitAddresses.length; i++) {
-            this.setDefaultApprovedConduit(conduitAddresses[i], approved[i]);
-        }
-    }
 
     /**
      * @notice Grant deployer role to an address
