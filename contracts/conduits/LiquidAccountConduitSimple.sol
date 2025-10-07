@@ -36,6 +36,16 @@ contract LiquidAccountConduitSimple is AccessControl, IERC721Receiver {
     address public immutable veToken;
 
     /*
+     * State
+     */
+
+    /// @notice Timestamp of the last successful job process per user
+    mapping(address => uint256) public lastJobTimestamp;
+
+    /// @notice Global cumulative amount of options tokens accumulated by each user
+    mapping(address => uint256) public cumulativeOptionsClaimed;
+
+    /*
      * Events
      */
 
@@ -88,7 +98,7 @@ contract LiquidAccountConduitSimple is AccessControl, IERC721Receiver {
      * @param _user Address to claim rewards for and receive the minted veNFT
      * @param _mergeToTokenId Optional veNFT tokenId owned by `_user` to merge the newly minted veNFT into (0 to skip)
      */
-    function claimAndExercise(
+    function claimExerciseAndMerge(
         address[] calldata _gauges,
         address _user,
         uint256 _mergeToTokenId
@@ -131,6 +141,9 @@ contract LiquidAccountConduitSimple is AccessControl, IERC721Receiver {
         if (mintedNftId != 0 && _mergeToTokenId != 0) {
             _mergeVeNFTs(_user, mintedNftId, _mergeToTokenId);
         }
+
+        lastJobTimestamp[_user] = block.timestamp;
+        cumulativeOptionsClaimed[_user] += totalOptionsClaimed;
 
         emit LiquidConduitJobExecuted(_user, totalOptionsClaimed, mintedNftId, _mergeToTokenId);
     }
