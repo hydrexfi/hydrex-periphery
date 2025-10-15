@@ -2,6 +2,19 @@
 pragma solidity 0.8.26;
 
 interface IHydrexVotingEscrow {
+    struct LockDetails {
+        uint256 amount; /// @dev amount of tokens locked
+        uint256 startTime; /// @dev when locking started
+        uint256 endTime; /// @dev when locking ends
+        LockType lockType; /// @dev defines the lock type
+    }
+
+    enum LockType {
+        NON_PERMANENT, /// non permanent lock
+        ROLLING, /// rolling max-lock
+        PERMANENT /// permanent lock that burns the underlying
+    }
+
     /**
      * @notice Delegates votes from a specific lock to a delegatee
      * @param _tokenId The ID of the lock token delegating the votes
@@ -71,4 +84,11 @@ interface IHydrexVotingEscrow {
         address _delegatee,
         uint8 _lockType
     ) external returns (uint256);
+
+    /**
+     * @notice Gets the lock details for a specific token ID
+     * @param _tokenId The ID of the token to query
+     * @return The lock details struct containing amount, times, and lock type
+     */
+    function _lockDetails(uint256 _tokenId) external view returns (LockDetails memory);
 }
