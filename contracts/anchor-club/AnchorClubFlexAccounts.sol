@@ -79,11 +79,17 @@ contract AnchorClubFlexAccounts is AccessControl, ReentrancyGuard {
     /// @notice Tracks which tiers have been claimed for each NFT (nftId => tierId => claimed)
     mapping(uint256 => mapping(uint8 => bool)) public tierClaims;
 
+    /// @notice Tracks total claimed credits per user address
+    mapping(address => uint256) public totalCredits;
+
     /// @notice Tier configurations (tierId => Tier)
     mapping(uint8 => Tier) public tiers;
 
     /// @notice Total number of active tiers
     uint8 public tierCount;
+
+    /// @notice Whether registrations are currently allowed
+    bool public registrationsAllowed;
 
     /*
      * Events
@@ -92,6 +98,7 @@ contract AnchorClubFlexAccounts is AccessControl, ReentrancyGuard {
     event Registered(address indexed user, uint256 indexed nftId, uint256 timestamp, uint256 snapshotAmount);
     event TierApproved(uint256 indexed nftId, uint8 indexed tierId, uint256 bonusAmount);
     event TierClaimed(address indexed user, uint256 indexed nftId, uint8 tierId, uint256 bonusAmount, uint256 newNftId);
+    event RegistrationsAllowedChanged(bool allowed);
 
     /*
      * Errors
@@ -107,9 +114,9 @@ contract AnchorClubFlexAccounts is AccessControl, ReentrancyGuard {
     error NotNftOwner();
     error NotApproved();
     error AlreadyClaimed();
-    error InsufficientOptionsBalance();
     error BalanceDecreased();
     error LockTypeChanged();
+    error RegistrationsNotAllowed();
 
     /*
      * Constructor
@@ -122,12 +129,14 @@ contract AnchorClubFlexAccounts is AccessControl, ReentrancyGuard {
         _grantRole(DEFAULT_ADMIN_ROLE, _admin);
         _grantRole(OPERATOR_ROLE, _admin);
 
-        tiers[1] = Tier({duration: 10 minutes, bonusPercentage: 5000});
-        tiers[2] = Tier({duration: 30 minutes, bonusPercentage: 5000});
-        tiers[3] = Tier({duration: 60 minutes, bonusPercentage: 7500});
-        tiers[4] = Tier({duration: 120 minutes, bonusPercentage: 12500});
-        tiers[5] = Tier({duration: 1 days, bonusPercentage: 20000});
+        tiers[1] = Tier({duration: 2 weeks, bonusPercentage: 2500});
+        tiers[2] = Tier({duration: 4 weeks, bonusPercentage: 5000});
+        tiers[3] = Tier({duration: 12 weeks, bonusPercentage: 7500});
+        tiers[4] = Tier({duration: 26 weeks, bonusPercentage: 10000});
+        tiers[5] = Tier({duration: 52 weeks, bonusPercentage: 15000});
         tierCount = 5;
+
+        registrationsAllowed = true;
     }
 
     /*
@@ -137,7 +146,7 @@ contract AnchorClubFlexAccounts is AccessControl, ReentrancyGuard {
     /// @notice Calculates bonus for a specific tier and amount
     /// @param amount The lock amount
     /// @param tierId The tier ID
-    /// @return bonusAmount The bonus amount (multiplied by 1.3x)
+    /// @return bonusAmount The bonus amount
     function calculateBonus(uint256 amount, uint8 tierId) public view returns (uint256 bonusAmount) {
         if (tierId == 0 || tierId > tierCount) return 0;
         return (amount * tiers[tierId].bonusPercentage * 13000) / 100000000;
@@ -208,6 +217,13 @@ contract AnchorClubFlexAccounts is AccessControl, ReentrancyGuard {
         return tierStatuses;
     }
 
+    /// @notice Get total claimed bonus credits for a user
+    /// @param user Address of the user to check
+    /// @return Total claimed bonus amount for the user
+    function getTotalClaimedCredits(address user) external view returns (uint256) {
+        return totalCredits[user];
+    }
+
     /*
      * User Functions
      */
@@ -216,6 +232,7 @@ contract AnchorClubFlexAccounts is AccessControl, ReentrancyGuard {
     /// @dev The NFT must be a ROLLING lock type (flex account)
     /// @param nftId The veNFT ID to register
     function register(uint256 nftId) external nonReentrant {
+        if (!registrationsAllowed) revert RegistrationsNotAllowed();
         if (nftId == 0) revert InvalidNftId();
 
         // Check caller owns the NFT
@@ -270,6 +287,9 @@ contract AnchorClubFlexAccounts is AccessControl, ReentrancyGuard {
         // Mark as claimed
         tierClaims[nftId][tierId] = true;
 
+        // Update total credits for user
+        totalCredits[msg.sender] += bonusAmount;
+
         // Exercise options to create veNFT for user
         uint256 newNftId = optionsToken.exerciseVe(bonusAmount, msg.sender);
 
@@ -284,19 +304,7 @@ contract AnchorClubFlexAccounts is AccessControl, ReentrancyGuard {
     /// @param nftId The NFT ID
     /// @param tierId The tier to approve
     function approveTier(uint256 nftId, uint8 tierId) external onlyRole(OPERATOR_ROLE) {
-        Registration memory reg = registrations[nftId];
-        if (reg.timestamp == 0) revert NotRegistered();
-        if (tierId == 0 || tierId > tierCount) revert InvalidTier();
-
-        // Verify time has elapsed
-        Tier memory tier = tiers[tierId];
-        uint256 timeElapsed = block.timestamp - reg.timestamp;
-        if (timeElapsed < tier.duration) revert NotApproved();
-
-        tierApprovals[nftId][tierId] = true;
-
-        uint256 bonusAmount = calculateBonus(reg.snapshotAmount, tierId);
-        emit TierApproved(nftId, tierId, bonusAmount);
+        if (!_approveTierInternal(nftId, tierId)) revert NotApproved();
     }
 
     /// @notice Batch approve tiers for multiple NFTs
@@ -304,27 +312,46 @@ contract AnchorClubFlexAccounts is AccessControl, ReentrancyGuard {
     /// @param tierIds Array of corresponding tier IDs
     function batchApproveTiers(uint256[] calldata nftIds, uint8[] calldata tierIds) external onlyRole(OPERATOR_ROLE) {
         if (nftIds.length != tierIds.length) revert InvalidAmount();
-
         for (uint256 i = 0; i < nftIds.length; i++) {
-            Registration memory reg = registrations[nftIds[i]];
-            if (reg.timestamp == 0) continue;
-            if (tierIds[i] == 0 || tierIds[i] > tierCount) continue;
-
-            // Verify time has elapsed
-            Tier memory tier = tiers[tierIds[i]];
-            uint256 timeElapsed = block.timestamp - reg.timestamp;
-            if (timeElapsed < tier.duration) continue;
-
-            tierApprovals[nftIds[i]][tierIds[i]] = true;
-
-            uint256 bonusAmount = calculateBonus(reg.snapshotAmount, tierIds[i]);
-            emit TierApproved(nftIds[i], tierIds[i], bonusAmount);
+            _approveTierInternal(nftIds[i], tierIds[i]);
         }
+    }
+
+    /*
+     * Internal Functions
+     */
+
+    /// @notice Internal function to validate and approve a tier
+    /// @param nftId The NFT ID
+    /// @param tierId The tier to approve
+    /// @return success True if approved, false if validation failed
+    function _approveTierInternal(uint256 nftId, uint8 tierId) internal returns (bool) {
+        Registration memory reg = registrations[nftId];
+        if (reg.timestamp == 0) return false;
+        if (tierId == 0 || tierId > tierCount) return false;
+        if (tierClaims[nftId][tierId]) return false;
+
+        Tier memory tier = tiers[tierId];
+        uint256 timeElapsed = block.timestamp - reg.timestamp;
+        if (timeElapsed < tier.duration) return false;
+
+        tierApprovals[nftId][tierId] = true;
+        uint256 bonusAmount = calculateBonus(reg.snapshotAmount, tierId);
+        emit TierApproved(nftId, tierId, bonusAmount);
+
+        return true;
     }
 
     /*
      * Admin Functions
      */
+
+    /// @notice Enable or disable new registrations
+    /// @param allowed Whether registrations should be allowed
+    function setRegistrationsAllowed(bool allowed) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        registrationsAllowed = allowed;
+        emit RegistrationsAllowedChanged(allowed);
+    }
 
     /// @notice Override snapshot amount for an NFT (emergency use)
     /// @dev Allows admin to correct registration amounts if needed
