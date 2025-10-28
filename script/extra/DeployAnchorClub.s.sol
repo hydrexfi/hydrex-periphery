@@ -28,7 +28,7 @@ contract DeployAnchorClub is Script {
         );
         console.log("AnchorClubFlexAccounts:", address(flex));
 
-        // Deploy Liquid Conduit wrapper (expects an existing LiquidAccountConduitSimple)
+        // Deploy Liquid Conduit wrapper (single initial LiquidAccountConduitSimple)
         AnchorClubLiquidConduit liquid = new AnchorClubLiquidConduit(
             LiquidAccountConduitSimple(payable(conduitSimple)),
             IOptionsToken(optionsToken),

@@ -20,15 +20,20 @@ import {IOptionsToken} from "../interfaces/IOptionsToken.sol";
 /**
  * @title AnchorClubLiquidConduit
  * @notice Manages Anchor Club Credits earned through Liquid Account Automations
- * @dev Users earn 250% bonus (2.5x multiplier) on all oHYDX claimed through the liquid conduit
+ * @dev Users earn a bonus on all oHYDX claimed through the liquid conduit
  *      Credits are redeemable 1:1 for earning power via permanent veNFT creation
  */
 contract AnchorClubLiquidConduit is AccessControl, ReentrancyGuard {
-    LiquidAccountConduitSimple public liquidConduit;
+    /// @notice List of Liquid Account conduits contributing to credit accrual
+    LiquidAccountConduitSimple[] public liquidConduits;
+
+    /// @notice Quick lookup to verify an address is an approved liquid conduit
+    mapping(address => bool) public isLiquidConduit;
+
     IOptionsToken public optionsToken;
 
     /// @notice Liquid Account bonus multiplier (250% = 2.5x in basis points)
-    uint256 public constant LIQUID_ACCOUNT_MULTIPLIER = 25000;
+    uint256 public liquidAccountMultiplier;
 
     /// @notice Tracks credits spent by each user
     mapping(address => uint256) public spentCredits;
@@ -38,6 +43,9 @@ contract AnchorClubLiquidConduit is AccessControl, ReentrancyGuard {
      */
 
     event LiquidConduitAnchorClubCreditsRedeemed(address indexed user, uint256 creditsSpent, uint256 nftId);
+    event LiquidConduitAdded(address indexed conduit);
+    event LiquidConduitRemoved(address indexed conduit);
+    event LiquidAccountMultiplierUpdated(uint256 oldMultiplier, uint256 newMultiplier);
 
     /*
      * Errors
@@ -46,6 +54,8 @@ contract AnchorClubLiquidConduit is AccessControl, ReentrancyGuard {
     error InsufficientCredits();
     error InvalidAmount();
     error InvalidAddress();
+    error DuplicateConduit();
+    error ConduitNotFound();
 
     /*
      * Constructor
@@ -55,23 +65,36 @@ contract AnchorClubLiquidConduit is AccessControl, ReentrancyGuard {
         if (address(_liquidConduit) == address(0) || address(_optionsToken) == address(0) || _admin == address(0)) {
             revert InvalidAddress();
         }
-
-        liquidConduit = _liquidConduit;
         optionsToken = _optionsToken;
-
+        liquidAccountMultiplier = 25000; // 250% bonus (2.5x)
         _grantRole(DEFAULT_ADMIN_ROLE, _admin);
+
+        // Seed initial conduit
+        address conduitAddr = address(_liquidConduit);
+        if (isLiquidConduit[conduitAddr]) revert DuplicateConduit();
+        isLiquidConduit[conduitAddr] = true;
+        liquidConduits.push(_liquidConduit);
+        emit LiquidConduitAdded(conduitAddr);
     }
 
     /*
      * View Functions
      */
 
-    /// @notice Calculates total credits earned by a user from liquid conduit (with 250% bonus)
+    /// @notice Returns the full list of liquid conduits
+    function getLiquidConduits() external view returns (LiquidAccountConduitSimple[] memory) {
+        return liquidConduits;
+    }
+
+    /// @notice Calculates total credits earned by a user from liquid conduit (with bonus)
     /// @param user The user address to check
-    /// @return Total credits earned (includes 250% bonus)
+    /// @return Total credits earned (includes multiplier bonus)
     function calculateTotalCredits(address user) public view returns (uint256) {
-        uint256 cumulativeClaimed = liquidConduit.cumulativeOptionsClaimed(user);
-        return (cumulativeClaimed * LIQUID_ACCOUNT_MULTIPLIER) / 10000;
+        uint256 cumulativeClaimed = 0;
+        for (uint256 i = 0; i < liquidConduits.length; i++) {
+            cumulativeClaimed += liquidConduits[i].cumulativeOptionsClaimed(user);
+        }
+        return (cumulativeClaimed * liquidAccountMultiplier) / 10000;
     }
 
     /// @notice Calculates remaining credits available for a user to spend
@@ -107,6 +130,58 @@ contract AnchorClubLiquidConduit is AccessControl, ReentrancyGuard {
     /*
      * Admin Functions
      */
+
+    /// @notice Add new liquid conduits
+    /// @param _conduits Array of conduits to add
+    function addLiquidConduits(LiquidAccountConduitSimple[] calldata _conduits) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        for (uint256 i = 0; i < _conduits.length; i++) {
+            address conduitAddr = address(_conduits[i]);
+            if (conduitAddr == address(0)) revert InvalidAddress();
+            if (isLiquidConduit[conduitAddr]) revert DuplicateConduit();
+            isLiquidConduit[conduitAddr] = true;
+            liquidConduits.push(_conduits[i]);
+            emit LiquidConduitAdded(conduitAddr);
+        }
+    }
+
+    /// @notice Remove existing liquid conduits
+    /// @dev Order of `liquidConduits` is not preserved
+    /// @param _conduits Array of conduits to remove
+    function removeLiquidConduits(
+        LiquidAccountConduitSimple[] calldata _conduits
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        for (uint256 i = 0; i < _conduits.length; i++) {
+            address conduitAddr = address(_conduits[i]);
+            if (!isLiquidConduit[conduitAddr]) revert ConduitNotFound();
+
+            // Find index
+            uint256 indexToRemove = type(uint256).max;
+            for (uint256 j = 0; j < liquidConduits.length; j++) {
+                if (address(liquidConduits[j]) == conduitAddr) {
+                    indexToRemove = j;
+                    break;
+                }
+            }
+            if (indexToRemove == type(uint256).max) revert ConduitNotFound();
+
+            // Swap and pop
+            uint256 lastIdx = liquidConduits.length - 1;
+            if (indexToRemove != lastIdx) {
+                liquidConduits[indexToRemove] = liquidConduits[lastIdx];
+            }
+            liquidConduits.pop();
+            isLiquidConduit[conduitAddr] = false;
+            emit LiquidConduitRemoved(conduitAddr);
+        }
+    }
+
+    /// @notice Update the liquid account multiplier
+    /// @param _newMultiplier New multiplier value in basis points
+    function setLiquidAccountMultiplier(uint256 _newMultiplier) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        uint256 oldMultiplier = liquidAccountMultiplier;
+        liquidAccountMultiplier = _newMultiplier;
+        emit LiquidAccountMultiplierUpdated(oldMultiplier, _newMultiplier);
+    }
 
     /// @notice Emergency function to recover any stuck tokens
     /// @param token Token address to recover
