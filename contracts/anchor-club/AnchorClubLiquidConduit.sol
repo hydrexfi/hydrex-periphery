@@ -38,6 +38,27 @@ contract AnchorClubLiquidConduit is AccessControl, ReentrancyGuard {
     /// @notice Tracks credits spent by each user
     mapping(address => uint256) public spentCredits;
 
+    /// @notice Tracks which address referred each user (user => referrer)
+    mapping(address => address) public referredBy;
+
+    /// @notice Tracks the list of users referred by each referrer (referrer => referees[])
+    mapping(address => address[]) public referralList;
+
+    /// @notice Bonus for referrer in basis points (1000 = 10%)
+    uint256 public referrerBonusBps;
+
+    /// @notice Bonus for referee in basis points (1000 = 10%)
+    uint256 public refereeBonusBps;
+
+    /// @notice Maximum bonus credits cap for using a referral (default 10000 ether = 10k)
+    uint256 public bonusCreditsCap;
+
+    /// @notice Maximum credits a user can have to set a referral (default 100 ether)
+    uint256 public maxCreditsToSetReferral;
+
+    /// @notice Whether users can set referrals
+    bool public referralsEnabled;
+
     /*
      * Events
      */
@@ -46,6 +67,10 @@ contract AnchorClubLiquidConduit is AccessControl, ReentrancyGuard {
     event LiquidConduitAdded(address indexed conduit);
     event LiquidConduitRemoved(address indexed conduit);
     event LiquidAccountMultiplierUpdated(uint256 oldMultiplier, uint256 newMultiplier);
+    event ReferralSet(address indexed user, address indexed referrer);
+    event ReferralBonusesUpdated(uint256 referrerBonusBps, uint256 refereeBonusBps, uint256 bonusCreditsCap);
+    event ReferralsEnabledToggled(bool enabled);
+    event MaxCreditsToSetReferralUpdated(uint256 oldMax, uint256 newMax);
 
     /*
      * Errors
@@ -56,6 +81,10 @@ contract AnchorClubLiquidConduit is AccessControl, ReentrancyGuard {
     error InvalidAddress();
     error DuplicateConduit();
     error ConduitNotFound();
+    error AlreadyHasReferrer();
+    error CannotReferSelf();
+    error TooManyCreditsToSetReferrer();
+    error ReferralsDisabled();
 
     /*
      * Constructor
@@ -66,7 +95,12 @@ contract AnchorClubLiquidConduit is AccessControl, ReentrancyGuard {
             revert InvalidAddress();
         }
         optionsToken = _optionsToken;
-        liquidAccountMultiplier = 25000; // 250% bonus (2.5x)
+        liquidAccountMultiplier = 25000;
+        referrerBonusBps = 1000;
+        refereeBonusBps = 1000;
+        bonusCreditsCap = 10000 ether;
+        maxCreditsToSetReferral = 100 ether;
+        referralsEnabled = true;
         _grantRole(DEFAULT_ADMIN_ROLE, _admin);
 
         // Seed initial conduit
@@ -86,15 +120,52 @@ contract AnchorClubLiquidConduit is AccessControl, ReentrancyGuard {
         return liquidConduits;
     }
 
-    /// @notice Calculates total credits earned by a user from liquid conduit (with bonus)
+    /// @notice Calculates base credits earned by a user from their own liquid conduit claims
     /// @param user The user address to check
-    /// @return Total credits earned (includes multiplier bonus)
-    function calculateTotalCredits(address user) public view returns (uint256) {
+    /// @return Base credits earned from liquid accounts (includes multiplier bonus)
+    function calculateBaseCredits(address user) public view returns (uint256) {
         uint256 cumulativeClaimed = 0;
         for (uint256 i = 0; i < liquidConduits.length; i++) {
             cumulativeClaimed += liquidConduits[i].cumulativeOptionsClaimed(user);
         }
         return (cumulativeClaimed * liquidAccountMultiplier) / 10000;
+    }
+
+    /// @notice Calculates referred credits (10% of all referrals' liquid accounts)
+    /// @param user The user address to check
+    /// @return Referred credits from all referees
+    function calculateReferredCredits(address user) public view returns (uint256) {
+        uint256 totalBonus = 0;
+        address[] memory userReferrals = referralList[user];
+        for (uint256 i = 0; i < userReferrals.length; i++) {
+            uint256 refereeBaseCredits = calculateBaseCredits(userReferrals[i]);
+            totalBonus += (refereeBaseCredits * referrerBonusBps) / 10000;
+        }
+        return totalBonus;
+    }
+
+    /// @notice Calculates bonus credits (10% if you used a referral code, capped by bonusCreditsCap)
+    /// @param user The user address to check
+    /// @return Bonus credits (0 if not referred, capped by bonusCreditsCap)
+    function calculateBonusCredits(address user) public view returns (uint256) {
+        if (referredBy[user] == address(0)) return 0;
+        uint256 baseCredits = calculateBaseCredits(user);
+        uint256 bonus = (baseCredits * refereeBonusBps) / 10000;
+        return bonus > bonusCreditsCap ? bonusCreditsCap : bonus;
+    }
+
+    /// @notice Calculates total credits earned by a user (sum of base + referred + bonus)
+    /// @param user The user address to check
+    /// @return Total credits earned including all bonuses
+    function calculateTotalCredits(address user) public view returns (uint256) {
+        return calculateBaseCredits(user) + calculateReferredCredits(user) + calculateBonusCredits(user);
+    }
+
+    /// @notice Returns all referees for a given referrer
+    /// @param _referrer The referrer address
+    /// @return Array of referee addresses
+    function getReferees(address _referrer) public view returns (address[] memory) {
+        return referralList[_referrer];
     }
 
     /// @notice Calculates remaining credits available for a user to spend
@@ -107,6 +178,22 @@ contract AnchorClubLiquidConduit is AccessControl, ReentrancyGuard {
     /*
      * User Functions
      */
+
+    /// @notice Set referrer for the caller
+    /// @dev Can only be set once, cannot refer yourself, and must have credits below threshold
+    /// @param _referrer Address of the referrer
+    function setReferrer(address _referrer) external {
+        if (!referralsEnabled) revert ReferralsDisabled();
+        if (_referrer == address(0)) revert InvalidAddress();
+        if (_referrer == msg.sender) revert CannotReferSelf();
+        if (referredBy[msg.sender] != address(0)) revert AlreadyHasReferrer();
+        if (calculateTotalCredits(msg.sender) >= maxCreditsToSetReferral) revert TooManyCreditsToSetReferrer();
+
+        referredBy[msg.sender] = _referrer;
+        referralList[_referrer].push(msg.sender);
+
+        emit ReferralSet(msg.sender, _referrer);
+    }
 
     /// @notice Redeem liquid conduit credits to create a protocol account (permanent veNFT)
     /// @dev Burns option tokens held by this contract and creates a permanent lock for the user
@@ -181,6 +268,36 @@ contract AnchorClubLiquidConduit is AccessControl, ReentrancyGuard {
         uint256 oldMultiplier = liquidAccountMultiplier;
         liquidAccountMultiplier = _newMultiplier;
         emit LiquidAccountMultiplierUpdated(oldMultiplier, _newMultiplier);
+    }
+
+    /// @notice Update referral bonus percentages and cap
+    /// @param _referrerBonusBps New referrer bonus in basis points (e.g., 1000 = 10%)
+    /// @param _refereeBonusBps New referee bonus in basis points (e.g., 1000 = 10%)
+    /// @param _bonusCreditsCap New bonus credits cap (e.g., 10000 ether = 10k)
+    function setReferralBonuses(
+        uint256 _referrerBonusBps,
+        uint256 _refereeBonusBps,
+        uint256 _bonusCreditsCap
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        referrerBonusBps = _referrerBonusBps;
+        refereeBonusBps = _refereeBonusBps;
+        bonusCreditsCap = _bonusCreditsCap;
+        emit ReferralBonusesUpdated(_referrerBonusBps, _refereeBonusBps, _bonusCreditsCap);
+    }
+
+    /// @notice Toggle whether users can set referrals
+    /// @param _enabled True to enable referrals, false to disable
+    function setReferralsEnabled(bool _enabled) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        referralsEnabled = _enabled;
+        emit ReferralsEnabledToggled(_enabled);
+    }
+
+    /// @notice Update the maximum credits threshold for setting a referral
+    /// @param _maxCredits New maximum credits threshold
+    function setMaxCreditsToSetReferral(uint256 _maxCredits) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        uint256 oldMax = maxCreditsToSetReferral;
+        maxCreditsToSetReferral = _maxCredits;
+        emit MaxCreditsToSetReferralUpdated(oldMax, _maxCredits);
     }
 
     /// @notice Emergency function to recover any stuck tokens
