@@ -224,6 +224,13 @@ contract AnchorClubFlexAccounts is AccessControl, ReentrancyGuard {
         return totalCredits[user];
     }
 
+    /// @notice Get total claimed bonus credits for a user
+    /// @param user Address of the user to check
+    /// @return Total claimed bonus amount for the user
+    function calculateTotalCredits(address user) external view returns (uint256) {
+        return totalCredits[user];
+    }
+
     /*
      * User Functions
      */
