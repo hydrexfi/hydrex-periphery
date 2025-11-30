@@ -21,9 +21,10 @@ interface IBribe {
 
 /**
  * @title BribeBatches
- * @notice Utility contract for partners to deposit incentives and spread them over multiple weeks
+ * @notice Utility contract for partners to deposit incentives and spread them over multiple weeks across multiple gauges
  * @dev Supports both existing gauges (bribes immediately) and pending gauges (operator populates later)
  *      Uses epoch-based timing - bribes can only be executed once per epoch (no two bribes in same epoch)
+ *      Supports multi-gauge bribing with weighted distribution
  */
 contract BribeBatches is AccessControl {
     using SafeERC20 for IERC20;
@@ -36,11 +37,19 @@ contract BribeBatches is AccessControl {
     /// @notice Duration of each epoch (1 week)
     uint256 public constant EPOCH_DURATION = 1 weeks;
 
+    /// @notice Basis points denominator (10000 = 100%)
+    uint256 public constant BASIS_POINTS = 10000;
+
     enum BatchStatus {
         PendingBribeContract, // Awaiting bribe contract - no bribe contract address set yet
         Active, // Bribe contract set AND first bribe has been placed
         Finished, // All weekly bribes completed
         Stopped // Manually stopped by admin
+    }
+
+    struct BribeConfig {
+        address[] bribeContracts; // Array of bribe contract addresses
+        uint256[] weights; // Weights in basis points (must sum to 10000)
     }
 
     struct BribeBatch {
@@ -53,7 +62,7 @@ contract BribeBatches is AccessControl {
         uint256 startTime; // Timestamp when batch was created
         uint256 lastExecutedEpoch; // Last epoch when bribe was executed (0 = never executed)
         BatchStatus status; // Current status of the batch
-        address bribeContract; // Bribe contract address (set when populated)
+        BribeConfig bribeConfig; // Bribe configuration (contracts + weights)
     }
 
     /// @notice Mapping from batch ID to batch info
@@ -78,18 +87,19 @@ contract BribeBatches is AccessControl {
         uint256 totalAmount,
         uint256 totalWeeks,
         BatchStatus status,
-        address bribeContract
+        address[] bribeContracts,
+        uint256[] weights
     );
     event BatchExecuted(
         uint256 indexed batchId,
         address indexed depositor,
-        address indexed bribeContract,
         address rewardToken,
         uint256 weekNumber,
         uint256 totalWeeks,
         uint256 amount
     );
-    event BribeContractPopulated(uint256 indexed batchId, address bribeContract);
+    event BribeContractPopulated(uint256 indexed batchId, address[] bribeContracts, uint256[] weights);
+    event BribeContractUpdated(uint256 indexed batchId, address[] bribeContracts, uint256[] weights);
     event BatchStopped(uint256 indexed batchId, uint256 remainingAmount);
 
     error InvalidWeeks();
@@ -102,6 +112,8 @@ contract BribeBatches is AccessControl {
     error TooEarlyToExecute();
     error InvalidBribeAddress();
     error InvalidAddress();
+    error InvalidWeights();
+    error InvalidBribeConfig();
 
     constructor() {
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
@@ -143,27 +155,71 @@ contract BribeBatches is AccessControl {
         return batchData;
     }
 
+    /**
+     * @notice Get paginated active batches
+     * @param offset Starting index in the active batches array
+     * @param limit Maximum number of batches to return
+     * @return batchData Array of batch data (each includes its batchId)
+     * @return total Total number of active batches
+     */
+    function getActiveBatchesPaginated(uint256 offset, uint256 limit)
+        external
+        view
+        returns (BribeBatch[] memory batchData, uint256 total)
+    {
+        total = activeBatchIds.length;
+
+        if (offset >= total) {
+            return (new BribeBatch[](0), total);
+        }
+
+        uint256 end = offset + limit;
+        if (end > total) {
+            end = total;
+        }
+
+        uint256 resultLength = end - offset;
+        batchData = new BribeBatch[](resultLength);
+
+        for (uint256 i = 0; i < resultLength; i++) {
+            batchData[i] = batches[activeBatchIds[offset + i]];
+        }
+
+        return (batchData, total);
+    }
+
+    /**
+     * @notice Get total number of active batches
+     * @return count Number of active batches
+     */
+    function getActiveBatchCount() external view returns (uint256 count) {
+        return activeBatchIds.length;
+    }
+
     /*
      * External Functions
      */
 
     /**
-     * @notice Create a new bribe batch with an existing bribe contract
+     * @notice Create a new bribe batch with existing bribe contracts
      * @dev IMPORTANT: First bribe is ALWAYS triggered immediately when bribe contract is set
      *      This ensures we never set a bribe contract without an initial bribe placement
      * @param rewardToken Token to be used for bribes
      * @param totalAmount Total amount to distribute
      * @param totalWeeks Number of weeks to spread over
-     * @param bribeContract Address of the bribe contract
+     * @param bribeContracts Array of bribe contract addresses
+     * @param weights Array of weights in basis points (must sum to 10000)
      */
     function createBatchWithExistingBribeContract(
         address rewardToken,
         uint256 totalAmount,
         uint256 totalWeeks,
-        address bribeContract
+        address[] calldata bribeContracts,
+        uint256[] calldata weights
     ) external returns (uint256 batchId) {
-        if (bribeContract == address(0)) revert InvalidBribeAddress();
-        batchId = _createBatch(rewardToken, totalAmount, totalWeeks, bribeContract, BatchStatus.PendingBribeContract);
+        BribeConfig memory config = BribeConfig({bribeContracts: bribeContracts, weights: weights});
+        _validateBribeConfig(config);
+        batchId = _createBatch(rewardToken, totalAmount, totalWeeks, config, BatchStatus.PendingBribeContract);
         // MUST trigger first bribe to transition to Active status
         _executeBribe(batchId);
     }
@@ -179,12 +235,29 @@ contract BribeBatches is AccessControl {
         uint256 totalAmount,
         uint256 totalWeeks
     ) external returns (uint256 batchId) {
-        batchId = _createBatch(rewardToken, totalAmount, totalWeeks, address(0), BatchStatus.PendingBribeContract);
+        BribeConfig memory emptyConfig;
+        batchId = _createBatch(rewardToken, totalAmount, totalWeeks, emptyConfig, BatchStatus.PendingBribeContract);
     }
 
     /*
      * Internal Functions
      */
+
+    /**
+     * @notice Validate bribe configuration
+     */
+    function _validateBribeConfig(BribeConfig memory config) internal pure {
+        if (config.bribeContracts.length == 0) revert InvalidBribeConfig();
+        if (config.bribeContracts.length != config.weights.length) revert InvalidBribeConfig();
+
+        uint256 totalWeight = 0;
+        for (uint256 i = 0; i < config.weights.length; i++) {
+            if (config.bribeContracts[i] == address(0)) revert InvalidBribeAddress();
+            totalWeight += config.weights[i];
+        }
+
+        if (totalWeight != BASIS_POINTS) revert InvalidWeights();
+    }
 
     /**
      * @notice Internal function to create a batch
@@ -193,7 +266,7 @@ contract BribeBatches is AccessControl {
         address rewardToken,
         uint256 totalAmount,
         uint256 totalWeeks,
-        address bribeContract,
+        BribeConfig memory config,
         BatchStatus status
     ) internal returns (uint256 batchId) {
         if (totalWeeks == 0) revert InvalidWeeks();
@@ -202,31 +275,34 @@ contract BribeBatches is AccessControl {
         batchId = nextBatchId++;
         IERC20(rewardToken).safeTransferFrom(msg.sender, address(this), totalAmount);
 
-        batches[batchId] = BribeBatch({
-            batchId: batchId,
-            depositor: msg.sender,
-            rewardToken: rewardToken,
-            totalAmount: totalAmount,
-            totalWeeks: totalWeeks,
-            weeksExecuted: 0,
-            startTime: block.timestamp,
-            lastExecutedEpoch: 0,
-            status: status,
-            bribeContract: bribeContract
-        });
+        BribeBatch storage batch = batches[batchId];
+        batch.batchId = batchId;
+        batch.depositor = msg.sender;
+        batch.rewardToken = rewardToken;
+        batch.totalAmount = totalAmount;
+        batch.totalWeeks = totalWeeks;
+        batch.weeksExecuted = 0;
+        batch.startTime = block.timestamp;
+        batch.lastExecutedEpoch = 0;
+        batch.status = status;
+        batch.bribeConfig.bribeContracts = config.bribeContracts;
+        batch.bribeConfig.weights = config.weights;
 
         // Track in active batches
         isBatchActive[batchId] = true;
         batchIdToIndex[batchId] = activeBatchIds.length;
         activeBatchIds.push(batchId);
 
-        emit BatchCreated(batchId, msg.sender, rewardToken, totalAmount, totalWeeks, status, bribeContract);
+        emit BatchCreated(
+            batchId, msg.sender, rewardToken, totalAmount, totalWeeks, status, config.bribeContracts, config.weights
+        );
     }
 
     /**
      * @notice Internal function to execute a bribe
      * @dev Transitions batch from PendingBribeContract -> Active on first bribe, and Active -> Finished on completion
      *      Enforces that bribes can only happen once per epoch (no two bribes in same epoch)
+     *      Distributes amounts across all bribe contracts according to weights
      * @param batchId ID of the batch to execute
      */
     function _executeBribe(uint256 batchId) internal {
@@ -246,18 +322,18 @@ contract BribeBatches is AccessControl {
             }
         }
 
-        // Transition to Active on first bribe (bribe address must be set)
+        // Transition to Active on first bribe (bribe config must be set)
         if (batch.status == BatchStatus.PendingBribeContract) {
-            if (batch.bribeContract == address(0)) revert BatchNotActive();
+            if (batch.bribeConfig.bribeContracts.length == 0) revert BatchNotActive();
             batch.status = BatchStatus.Active;
         }
 
         // Update last executed epoch
         batch.lastExecutedEpoch = currentEpoch;
 
-        // Calculate amount - handle dust on last week
+        // Calculate total amount for this week - handle dust on last week
         uint256 weeklyAmount = batch.totalAmount / batch.totalWeeks;
-        uint256 amount = (batch.weeksExecuted == batch.totalWeeks - 1)
+        uint256 totalAmount = (batch.weeksExecuted == batch.totalWeeks - 1)
             ? batch.totalAmount - (weeklyAmount * batch.weeksExecuted)
             : weeklyAmount;
 
@@ -269,18 +345,28 @@ contract BribeBatches is AccessControl {
             _removeBatchFromActive(batchId);
         }
 
-        IERC20(batch.rewardToken).approve(batch.bribeContract, amount);
-        IBribe(batch.bribeContract).notifyRewardAmount(batch.rewardToken, amount);
+        // Distribute to each bribe contract according to weights
+        uint256 distributed = 0;
+        uint256 numBribes = batch.bribeConfig.bribeContracts.length;
+        
+        for (uint256 i = 0; i < numBribes; i++) {
+            address bribeContract = batch.bribeConfig.bribeContracts[i];
+            uint256 weight = batch.bribeConfig.weights[i];
+            
+            // Calculate amount for this bribe (handle dust on last iteration)
+            uint256 amount;
+            if (i == numBribes - 1) {
+                amount = totalAmount - distributed; // Give remaining to last bribe
+            } else {
+                amount = (totalAmount * weight) / BASIS_POINTS;
+                distributed += amount;
+            }
 
-        emit BatchExecuted(
-            batchId,
-            batch.depositor,
-            batch.bribeContract,
-            batch.rewardToken,
-            weekNumber,
-            batch.totalWeeks,
-            amount
-        );
+            IERC20(batch.rewardToken).approve(bribeContract, amount);
+            IBribe(bribeContract).notifyRewardAmount(batch.rewardToken, amount);
+        }
+
+        emit BatchExecuted(batchId, batch.depositor, batch.rewardToken, weekNumber, batch.totalWeeks, totalAmount);
     }
 
     /**
@@ -320,24 +406,43 @@ contract BribeBatches is AccessControl {
     }
 
     /**
-     * @notice Populate a pending batch with bribe contract address
-     * @dev IMPORTANT: First bribe is ALWAYS triggered when bribe contract is populated
-     *      This ensures we never set a bribe contract without an initial bribe placement
-     * @param batchId ID of the batch to populate
-     * @param bribeContract Address of the bribe contract
+     * @notice Populate or update bribe configuration for a batch
+     * @dev Admin can change bribe config for any non-finished batch, with optional execution
+     * @param batchId ID of the batch to populate/update
+     * @param bribeContracts Array of bribe contract addresses
+     * @param weights Array of weights in basis points (must sum to 10000)
+     * @param executeImmediately If true, execute a bribe immediately after updating
      */
-    function populateBribeContract(uint256 batchId, address bribeContract) external onlyRole(OPERATOR_ROLE) {
+    function populateBribeContract(
+        uint256 batchId,
+        address[] calldata bribeContracts,
+        uint256[] calldata weights,
+        bool executeImmediately
+    ) external onlyRole(OPERATOR_ROLE) {
         BribeBatch storage batch = batches[batchId];
         if (batch.totalAmount == 0) revert BatchNotFound();
-        if (batch.status != BatchStatus.PendingBribeContract) revert BatchNotPendingBribeContract();
-        if (bribeContract == address(0)) revert InvalidBribeAddress();
+        if (batch.status == BatchStatus.Finished) revert BatchCompleted();
+        if (batch.status == BatchStatus.Stopped) revert BatchAlreadyStopped();
 
-        batch.bribeContract = bribeContract;
+        BribeConfig memory config = BribeConfig({bribeContracts: bribeContracts, weights: weights});
+        _validateBribeConfig(config);
 
-        emit BribeContractPopulated(batchId, bribeContract);
+        bool isFirstPopulate = batch.bribeConfig.bribeContracts.length == 0;
 
-        // MUST trigger first bribe to transition to Active status
-        _executeBribe(batchId);
+        // Update batch config
+        batch.bribeConfig.bribeContracts = bribeContracts;
+        batch.bribeConfig.weights = weights;
+
+        if (isFirstPopulate) {
+            emit BribeContractPopulated(batchId, bribeContracts, weights);
+        } else {
+            emit BribeContractUpdated(batchId, bribeContracts, weights);
+        }
+
+        // Optionally execute a bribe immediately
+        if (executeImmediately) {
+            _executeBribe(batchId);
+        }
     }
 
     /**

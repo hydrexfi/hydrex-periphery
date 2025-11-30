@@ -60,7 +60,16 @@ contract BribeBatchesTest is Test {
         bribeBatches.grantRole(bribeBatches.OPERATOR_ROLE(), operator);
 
         // Fund depositor with tokens
-        rewardToken.mint(depositor, 100_000 * 10 ** 18);
+        rewardToken.mint(depositor, 1_000_000 * 10 ** 18);
+    }
+
+    // Helper function to create single bribe config
+    function _singleBribeConfig(address bribe) internal pure returns (address[] memory, uint256[] memory) {
+        address[] memory bribes = new address[](1);
+        bribes[0] = bribe;
+        uint256[] memory weights = new uint256[](1);
+        weights[0] = 10000;
+        return (bribes, weights);
     }
 
     /*
@@ -70,6 +79,7 @@ contract BribeBatchesTest is Test {
     function testInitialState() public view {
         assertEq(bribeBatches.EPOCH_START(), EPOCH_START);
         assertEq(bribeBatches.EPOCH_DURATION(), EPOCH_DURATION);
+        assertEq(bribeBatches.BASIS_POINTS(), 10000);
         assertEq(bribeBatches.nextBatchId(), 0);
         assertTrue(bribeBatches.hasRole(bribeBatches.DEFAULT_ADMIN_ROLE(), owner));
         assertTrue(bribeBatches.hasRole(bribeBatches.OPERATOR_ROLE(), owner));
@@ -106,8 +116,10 @@ contract BribeBatchesTest is Test {
         vm.startPrank(depositor);
         rewardToken.approve(address(bribeBatches), totalAmount);
 
+        (address[] memory bribes, uint256[] memory weights) = _singleBribeConfig(address(bribeContract));
+
         uint256 batchId = bribeBatches.createBatchWithExistingBribeContract(
-            address(rewardToken), totalAmount, totalWeeks, address(bribeContract)
+            address(rewardToken), totalAmount, totalWeeks, bribes, weights
         );
         vm.stopPrank();
 
@@ -120,10 +132,49 @@ contract BribeBatchesTest is Test {
         assertEq(batch.totalWeeks, totalWeeks);
         assertEq(batch.weeksExecuted, 1); // First bribe executed immediately
         assertEq(uint256(batch.status), uint256(BribeBatches.BatchStatus.Active));
-        assertEq(batch.bribeContract, address(bribeContract));
+        assertEq(batch.bribeConfig.bribeContracts.length, 1);
+        assertEq(batch.bribeConfig.bribeContracts[0], address(bribeContract));
+        assertEq(batch.bribeConfig.weights[0], 10000);
 
         // Verify first bribe was sent
         assertEq(bribeContract.totalRewardsReceived(), totalAmount / totalWeeks);
+    }
+
+    function testCreateBatchWithMultipleBribeContracts() public {
+        vm.warp(EPOCH_START);
+        uint256 totalAmount = 10_000 * 10 ** 18;
+        uint256 totalWeeks = 10;
+
+        MockBribe bribe1 = new MockBribe();
+        MockBribe bribe2 = new MockBribe();
+        MockBribe bribe3 = new MockBribe();
+
+        address[] memory bribes = new address[](3);
+        bribes[0] = address(bribe1);
+        bribes[1] = address(bribe2);
+        bribes[2] = address(bribe3);
+
+        uint256[] memory weights = new uint256[](3);
+        weights[0] = 5000; // 50%
+        weights[1] = 3000; // 30%
+        weights[2] = 2000; // 20%
+
+        vm.startPrank(depositor);
+        rewardToken.approve(address(bribeBatches), totalAmount);
+
+        uint256 batchId = bribeBatches.createBatchWithExistingBribeContract(
+            address(rewardToken), totalAmount, totalWeeks, bribes, weights
+        );
+        vm.stopPrank();
+
+        BribeBatches.BribeBatch memory batch = bribeBatches.getBatch(batchId);
+        assertEq(batch.bribeConfig.bribeContracts.length, 3);
+        
+        uint256 weeklyAmount = totalAmount / totalWeeks;
+        // Verify distribution (50%, 30%, 20%)
+        assertEq(bribe1.totalRewardsReceived(), weeklyAmount * 50 / 100);
+        assertEq(bribe2.totalRewardsReceived(), weeklyAmount * 30 / 100);
+        assertEq(bribe3.totalRewardsReceived(), weeklyAmount * 20 / 100);
     }
 
     function testCreateBatchWithoutBribeContract() public {
@@ -146,7 +197,7 @@ contract BribeBatchesTest is Test {
         assertEq(batch.totalWeeks, totalWeeks);
         assertEq(batch.weeksExecuted, 0); // No bribes executed yet
         assertEq(uint256(batch.status), uint256(BribeBatches.BatchStatus.PendingBribeContract));
-        assertEq(batch.bribeContract, address(0));
+        assertEq(batch.bribeConfig.bribeContracts.length, 0);
     }
 
     function test_RevertWhen_CreateBatchWithZeroWeeks() public {
@@ -156,10 +207,10 @@ contract BribeBatchesTest is Test {
         vm.startPrank(depositor);
         rewardToken.approve(address(bribeBatches), totalAmount);
 
+        (address[] memory bribes, uint256[] memory weights) = _singleBribeConfig(address(bribeContract));
+
         vm.expectRevert(BribeBatches.InvalidWeeks.selector);
-        bribeBatches.createBatchWithExistingBribeContract(
-            address(rewardToken), totalAmount, 0, address(bribeContract)
-        );
+        bribeBatches.createBatchWithExistingBribeContract(address(rewardToken), totalAmount, 0, bribes, weights);
         vm.stopPrank();
     }
 
@@ -169,8 +220,10 @@ contract BribeBatchesTest is Test {
         vm.startPrank(depositor);
         rewardToken.approve(address(bribeBatches), 0);
 
+        (address[] memory bribes, uint256[] memory weights) = _singleBribeConfig(address(bribeContract));
+
         vm.expectRevert(BribeBatches.InvalidAmount.selector);
-        bribeBatches.createBatchWithExistingBribeContract(address(rewardToken), 0, 10, address(bribeContract));
+        bribeBatches.createBatchWithExistingBribeContract(address(rewardToken), 0, 10, bribes, weights);
         vm.stopPrank();
     }
 
@@ -181,22 +234,49 @@ contract BribeBatchesTest is Test {
         vm.startPrank(depositor);
         rewardToken.approve(address(bribeBatches), totalAmount);
 
+        (address[] memory bribes, uint256[] memory weights) = _singleBribeConfig(address(bribeContract));
+
         vm.expectRevert(BribeBatches.InvalidAmount.selector);
-        bribeBatches.createBatchWithExistingBribeContract(
-            address(rewardToken), totalAmount, 10, address(bribeContract)
-        );
+        bribeBatches.createBatchWithExistingBribeContract(address(rewardToken), totalAmount, 10, bribes, weights);
         vm.stopPrank();
     }
 
-    function test_RevertWhen_CreateBatchWithInvalidBribeAddress() public {
+    function test_RevertWhen_CreateBatchWithInvalidWeights() public {
         vm.warp(EPOCH_START);
         uint256 totalAmount = 10_000 * 10 ** 18;
+
+        address[] memory bribes = new address[](2);
+        bribes[0] = address(bribeContract);
+        bribes[1] = address(new MockBribe());
+
+        uint256[] memory weights = new uint256[](2);
+        weights[0] = 5000;
+        weights[1] = 4000; // Only sums to 9000, not 10000
 
         vm.startPrank(depositor);
         rewardToken.approve(address(bribeBatches), totalAmount);
 
-        vm.expectRevert(BribeBatches.InvalidBribeAddress.selector);
-        bribeBatches.createBatchWithExistingBribeContract(address(rewardToken), totalAmount, 10, address(0));
+        vm.expectRevert(BribeBatches.InvalidWeights.selector);
+        bribeBatches.createBatchWithExistingBribeContract(address(rewardToken), totalAmount, 10, bribes, weights);
+        vm.stopPrank();
+    }
+
+    function test_RevertWhen_CreateBatchWithMismatchedArrays() public {
+        vm.warp(EPOCH_START);
+        uint256 totalAmount = 10_000 * 10 ** 18;
+
+        address[] memory bribes = new address[](2);
+        bribes[0] = address(bribeContract);
+        bribes[1] = address(new MockBribe());
+
+        uint256[] memory weights = new uint256[](1);
+        weights[0] = 10000;
+
+        vm.startPrank(depositor);
+        rewardToken.approve(address(bribeBatches), totalAmount);
+
+        vm.expectRevert(BribeBatches.InvalidBribeConfig.selector);
+        bribeBatches.createBatchWithExistingBribeContract(address(rewardToken), totalAmount, 10, bribes, weights);
         vm.stopPrank();
     }
 
@@ -211,9 +291,9 @@ contract BribeBatchesTest is Test {
 
         vm.startPrank(depositor);
         rewardToken.approve(address(bribeBatches), totalAmount);
-        uint256 batchId = bribeBatches.createBatchWithExistingBribeContract(
-            address(rewardToken), totalAmount, totalWeeks, address(bribeContract)
-        );
+        (address[] memory bribes, uint256[] memory weights) = _singleBribeConfig(address(bribeContract));
+        uint256 batchId =
+            bribeBatches.createBatchWithExistingBribeContract(address(rewardToken), totalAmount, totalWeeks, bribes, weights);
         vm.stopPrank();
 
         // Execute remaining weeks
@@ -247,9 +327,9 @@ contract BribeBatchesTest is Test {
 
         vm.startPrank(depositor);
         rewardToken.approve(address(bribeBatches), totalAmount);
-        uint256 batchId = bribeBatches.createBatchWithExistingBribeContract(
-            address(rewardToken), totalAmount, totalWeeks, address(bribeContract)
-        );
+        (address[] memory bribes, uint256[] memory weights) = _singleBribeConfig(address(bribeContract));
+        uint256 batchId =
+            bribeBatches.createBatchWithExistingBribeContract(address(rewardToken), totalAmount, totalWeeks, bribes, weights);
         vm.stopPrank();
 
         uint256[] memory batchIds = new uint256[](1);
@@ -272,9 +352,8 @@ contract BribeBatchesTest is Test {
 
         vm.startPrank(depositor);
         rewardToken.approve(address(bribeBatches), totalAmount);
-        uint256 batchId = bribeBatches.createBatchWithExistingBribeContract(
-            address(rewardToken), totalAmount, 10, address(bribeContract)
-        );
+        (address[] memory bribes, uint256[] memory weights) = _singleBribeConfig(address(bribeContract));
+        uint256 batchId = bribeBatches.createBatchWithExistingBribeContract(address(rewardToken), totalAmount, 10, bribes, weights);
         vm.stopPrank();
 
         // Try to execute again in the same epoch
@@ -293,9 +372,9 @@ contract BribeBatchesTest is Test {
 
         vm.startPrank(depositor);
         rewardToken.approve(address(bribeBatches), totalAmount);
-        uint256 batchId = bribeBatches.createBatchWithExistingBribeContract(
-            address(rewardToken), totalAmount, totalWeeks, address(bribeContract)
-        );
+        (address[] memory bribes, uint256[] memory weights) = _singleBribeConfig(address(bribeContract));
+        uint256 batchId =
+            bribeBatches.createBatchWithExistingBribeContract(address(rewardToken), totalAmount, totalWeeks, bribes, weights);
         vm.stopPrank();
 
         // Execute last week
@@ -328,12 +407,13 @@ contract BribeBatchesTest is Test {
         vm.stopPrank();
 
         // Populate bribe contract
+        (address[] memory bribes, uint256[] memory weights) = _singleBribeConfig(address(bribeContract));
         vm.prank(operator);
-        bribeBatches.populateBribeContract(batchId, address(bribeContract));
+        bribeBatches.populateBribeContract(batchId, bribes, weights, true);
 
         BribeBatches.BribeBatch memory batch = bribeBatches.getBatch(batchId);
 
-        assertEq(batch.bribeContract, address(bribeContract));
+        assertEq(batch.bribeConfig.bribeContracts[0], address(bribeContract));
         assertEq(batch.weeksExecuted, 1); // First bribe executed immediately
         assertEq(uint256(batch.status), uint256(BribeBatches.BatchStatus.Active));
 
@@ -341,7 +421,7 @@ contract BribeBatchesTest is Test {
         assertEq(bribeContract.totalRewardsReceived(), totalAmount / totalWeeks);
     }
 
-    function test_RevertWhen_PopulateWithZeroAddress() public {
+    function test_RevertWhen_PopulateWithInvalidConfig() public {
         vm.warp(EPOCH_START);
         uint256 totalAmount = 10_000 * 10 ** 18;
 
@@ -350,33 +430,107 @@ contract BribeBatchesTest is Test {
         uint256 batchId = bribeBatches.createBatchWithoutBribeContract(address(rewardToken), totalAmount, 10);
         vm.stopPrank();
 
+        address[] memory bribes = new address[](0); // Empty
+        uint256[] memory weights = new uint256[](0);
+
         vm.prank(operator);
-        vm.expectRevert(BribeBatches.InvalidBribeAddress.selector);
-        bribeBatches.populateBribeContract(batchId, address(0));
+        vm.expectRevert(BribeBatches.InvalidBribeConfig.selector);
+        bribeBatches.populateBribeContract(batchId, bribes, weights, true);
     }
 
-    function test_RevertWhen_PopulateNonPendingBatch() public {
+    function testUpdateBribeContractForActiveBatch() public {
         vm.warp(EPOCH_START);
         uint256 totalAmount = 10_000 * 10 ** 18;
 
         vm.startPrank(depositor);
         rewardToken.approve(address(bribeBatches), totalAmount);
-        uint256 batchId = bribeBatches.createBatchWithExistingBribeContract(
-            address(rewardToken), totalAmount, 10, address(bribeContract)
-        );
+        (address[] memory bribes, uint256[] memory weights) = _singleBribeConfig(address(bribeContract));
+        uint256 batchId = bribeBatches.createBatchWithExistingBribeContract(address(rewardToken), totalAmount, 10, bribes, weights);
         vm.stopPrank();
 
         MockBribe newBribe = new MockBribe();
 
+        // Should be able to update active batch without executing
+        (address[] memory newBribes, uint256[] memory newWeights) = _singleBribeConfig(address(newBribe));
         vm.prank(operator);
-        vm.expectRevert(BribeBatches.BatchNotPendingBribeContract.selector);
-        bribeBatches.populateBribeContract(batchId, address(newBribe));
+        bribeBatches.populateBribeContract(batchId, newBribes, newWeights, false);
+
+        BribeBatches.BribeBatch memory batch = bribeBatches.getBatch(batchId);
+        assertEq(batch.bribeConfig.bribeContracts[0], address(newBribe));
+        assertEq(batch.weeksExecuted, 1); // Only first bribe was executed, not the second
+    }
+
+    function testUpdateBribeContractWithExecution() public {
+        vm.warp(EPOCH_START);
+        uint256 totalAmount = 10_000 * 10 ** 18;
+
+        vm.startPrank(depositor);
+        rewardToken.approve(address(bribeBatches), totalAmount);
+        (address[] memory bribes, uint256[] memory weights) = _singleBribeConfig(address(bribeContract));
+        uint256 batchId = bribeBatches.createBatchWithExistingBribeContract(address(rewardToken), totalAmount, 10, bribes, weights);
+        vm.stopPrank();
+
+        MockBribe newBribe = new MockBribe();
+
+        // Move to next epoch and update with execution
+        vm.warp(EPOCH_START + EPOCH_DURATION);
+        (address[] memory newBribes, uint256[] memory newWeights) = _singleBribeConfig(address(newBribe));
+        vm.prank(operator);
+        bribeBatches.populateBribeContract(batchId, newBribes, newWeights, true);
+
+        BribeBatches.BribeBatch memory batch = bribeBatches.getBatch(batchId);
+        assertEq(batch.bribeConfig.bribeContracts[0], address(newBribe));
+        assertEq(batch.weeksExecuted, 2); // Should have executed second bribe
+
+        // Verify new bribe received funds
+        assertEq(newBribe.totalRewardsReceived(), totalAmount / 10);
     }
 
     function test_RevertWhen_PopulateNonExistentBatch() public {
+        (address[] memory bribes, uint256[] memory weights) = _singleBribeConfig(address(bribeContract));
         vm.prank(operator);
         vm.expectRevert(BribeBatches.BatchNotFound.selector);
-        bribeBatches.populateBribeContract(999, address(bribeContract));
+        bribeBatches.populateBribeContract(999, bribes, weights, true);
+    }
+
+    function test_RevertWhen_PopulateFinishedBatch() public {
+        vm.warp(EPOCH_START);
+        uint256 totalAmount = 10_000 * 10 ** 18;
+
+        vm.startPrank(depositor);
+        rewardToken.approve(address(bribeBatches), totalAmount);
+        (address[] memory bribes, uint256[] memory weights) = _singleBribeConfig(address(bribeContract));
+        uint256 batchId = bribeBatches.createBatchWithExistingBribeContract(address(rewardToken), totalAmount, 1, bribes, weights);
+        vm.stopPrank();
+
+        // Batch is finished after creation (only 1 week)
+        MockBribe newBribe = new MockBribe();
+        (address[] memory newBribes, uint256[] memory newWeights) = _singleBribeConfig(address(newBribe));
+        vm.prank(operator);
+        vm.expectRevert(BribeBatches.BatchCompleted.selector);
+        bribeBatches.populateBribeContract(batchId, newBribes, newWeights, false);
+    }
+
+    function test_RevertWhen_PopulateStoppedBatch() public {
+        vm.warp(EPOCH_START);
+        uint256 totalAmount = 10_000 * 10 ** 18;
+
+        vm.startPrank(depositor);
+        rewardToken.approve(address(bribeBatches), totalAmount);
+        (address[] memory bribes, uint256[] memory weights) = _singleBribeConfig(address(bribeContract));
+        uint256 batchId = bribeBatches.createBatchWithExistingBribeContract(address(rewardToken), totalAmount, 10, bribes, weights);
+        vm.stopPrank();
+
+        // Stop the batch
+        vm.prank(owner);
+        bribeBatches.stopBatch(batchId);
+
+        // Try to update stopped batch
+        MockBribe newBribe = new MockBribe();
+        (address[] memory newBribes, uint256[] memory newWeights) = _singleBribeConfig(address(newBribe));
+        vm.prank(operator);
+        vm.expectRevert(BribeBatches.BatchAlreadyStopped.selector);
+        bribeBatches.populateBribeContract(batchId, newBribes, newWeights, false);
     }
 
     /*
@@ -390,9 +544,8 @@ contract BribeBatchesTest is Test {
 
         vm.startPrank(depositor);
         rewardToken.approve(address(bribeBatches), totalAmount);
-        uint256 batchId = bribeBatches.createBatchWithExistingBribeContract(
-            address(rewardToken), totalAmount, totalWeeks, address(bribeContract)
-        );
+        (address[] memory bribes, uint256[] memory weights) = _singleBribeConfig(address(bribeContract));
+        uint256 batchId = bribeBatches.createBatchWithExistingBribeContract(address(rewardToken), totalAmount, totalWeeks, bribes, weights);
         vm.stopPrank();
 
         // Stop the batch
@@ -414,9 +567,9 @@ contract BribeBatchesTest is Test {
 
         vm.startPrank(depositor);
         rewardToken.approve(address(bribeBatches), totalAmount);
-        uint256 batchId = bribeBatches.createBatchWithExistingBribeContract(
-            address(rewardToken), totalAmount, totalWeeks, address(bribeContract)
-        );
+        (address[] memory bribes, uint256[] memory weights) = _singleBribeConfig(address(bribeContract));
+        uint256 batchId =
+            bribeBatches.createBatchWithExistingBribeContract(address(rewardToken), totalAmount, totalWeeks, bribes, weights);
         vm.stopPrank();
 
         // Batch is already finished after creation (only 1 week)
@@ -431,9 +584,8 @@ contract BribeBatchesTest is Test {
 
         vm.startPrank(depositor);
         rewardToken.approve(address(bribeBatches), totalAmount);
-        uint256 batchId = bribeBatches.createBatchWithExistingBribeContract(
-            address(rewardToken), totalAmount, 10, address(bribeContract)
-        );
+        (address[] memory bribes, uint256[] memory weights) = _singleBribeConfig(address(bribeContract));
+        uint256 batchId = bribeBatches.createBatchWithExistingBribeContract(address(rewardToken), totalAmount, 10, bribes, weights);
         vm.stopPrank();
 
         // Stop once
@@ -452,9 +604,8 @@ contract BribeBatchesTest is Test {
 
         vm.startPrank(depositor);
         rewardToken.approve(address(bribeBatches), totalAmount);
-        uint256 batchId = bribeBatches.createBatchWithExistingBribeContract(
-            address(rewardToken), totalAmount, 10, address(bribeContract)
-        );
+        (address[] memory bribes, uint256[] memory weights) = _singleBribeConfig(address(bribeContract));
+        uint256 batchId = bribeBatches.createBatchWithExistingBribeContract(address(rewardToken), totalAmount, 10, bribes, weights);
         vm.stopPrank();
 
         // Stop the batch
@@ -483,14 +634,11 @@ contract BribeBatchesTest is Test {
         vm.startPrank(depositor);
         rewardToken.approve(address(bribeBatches), totalAmount * 3);
 
-        uint256 batchId1 = bribeBatches.createBatchWithExistingBribeContract(
-            address(rewardToken), totalAmount, 10, address(bribeContract)
-        );
-        uint256 batchId2 =
-            bribeBatches.createBatchWithoutBribeContract(address(rewardToken), totalAmount, 10);
-        uint256 batchId3 = bribeBatches.createBatchWithExistingBribeContract(
-            address(rewardToken), totalAmount, 10, address(bribeContract)
-        );
+        (address[] memory bribes, uint256[] memory weights) = _singleBribeConfig(address(bribeContract));
+
+        uint256 batchId1 = bribeBatches.createBatchWithExistingBribeContract(address(rewardToken), totalAmount, 10, bribes, weights);
+        uint256 batchId2 = bribeBatches.createBatchWithoutBribeContract(address(rewardToken), totalAmount, 10);
+        uint256 batchId3 = bribeBatches.createBatchWithExistingBribeContract(address(rewardToken), totalAmount, 10, bribes, weights);
         vm.stopPrank();
 
         BribeBatches.BribeBatch[] memory activeBatches = bribeBatches.getActiveBatches();
@@ -509,9 +657,9 @@ contract BribeBatchesTest is Test {
 
         vm.startPrank(depositor);
         rewardToken.approve(address(bribeBatches), totalAmount);
-        uint256 batchId = bribeBatches.createBatchWithExistingBribeContract(
-            address(rewardToken), totalAmount, totalWeeks, address(bribeContract)
-        );
+        (address[] memory bribes, uint256[] memory weights) = _singleBribeConfig(address(bribeContract));
+        uint256 batchId =
+            bribeBatches.createBatchWithExistingBribeContract(address(rewardToken), totalAmount, totalWeeks, bribes, weights);
         vm.stopPrank();
 
         // Initially active
@@ -529,6 +677,69 @@ contract BribeBatchesTest is Test {
         // Should be removed from active
         activeBatches = bribeBatches.getActiveBatches();
         assertEq(activeBatches.length, 0);
+    }
+
+    function testGetActiveBatchesPaginated() public {
+        vm.warp(EPOCH_START);
+        uint256 totalAmount = 10_000 * 10 ** 18;
+
+        // Create 10 batches
+        vm.startPrank(depositor);
+        rewardToken.approve(address(bribeBatches), totalAmount * 10);
+
+        (address[] memory bribes, uint256[] memory weights) = _singleBribeConfig(address(bribeContract));
+
+        for (uint256 i = 0; i < 10; i++) {
+            bribeBatches.createBatchWithExistingBribeContract(address(rewardToken), totalAmount, 10, bribes, weights);
+        }
+        vm.stopPrank();
+
+        // Test pagination
+        (BribeBatches.BribeBatch[] memory page1, uint256 total1) = bribeBatches.getActiveBatchesPaginated(0, 3);
+        assertEq(total1, 10);
+        assertEq(page1.length, 3);
+        assertEq(page1[0].batchId, 0);
+        assertEq(page1[1].batchId, 1);
+        assertEq(page1[2].batchId, 2);
+
+        // Get next page
+        (BribeBatches.BribeBatch[] memory page2, uint256 total2) = bribeBatches.getActiveBatchesPaginated(3, 3);
+        assertEq(total2, 10);
+        assertEq(page2.length, 3);
+        assertEq(page2[0].batchId, 3);
+        assertEq(page2[1].batchId, 4);
+        assertEq(page2[2].batchId, 5);
+
+        // Get last page (partial)
+        (BribeBatches.BribeBatch[] memory page3, uint256 total3) = bribeBatches.getActiveBatchesPaginated(8, 5);
+        assertEq(total3, 10);
+        assertEq(page3.length, 2); // Only 2 remaining
+        assertEq(page3[0].batchId, 8);
+        assertEq(page3[1].batchId, 9);
+
+        // Test offset beyond range
+        (BribeBatches.BribeBatch[] memory page4, uint256 total4) = bribeBatches.getActiveBatchesPaginated(20, 5);
+        assertEq(total4, 10);
+        assertEq(page4.length, 0);
+    }
+
+    function testGetActiveBatchCount() public {
+        vm.warp(EPOCH_START);
+        uint256 totalAmount = 10_000 * 10 ** 18;
+
+        assertEq(bribeBatches.getActiveBatchCount(), 0);
+
+        vm.startPrank(depositor);
+        rewardToken.approve(address(bribeBatches), totalAmount * 5);
+
+        (address[] memory bribes, uint256[] memory weights) = _singleBribeConfig(address(bribeContract));
+
+        for (uint256 i = 0; i < 5; i++) {
+            bribeBatches.createBatchWithExistingBribeContract(address(rewardToken), totalAmount, 10, bribes, weights);
+        }
+        vm.stopPrank();
+
+        assertEq(bribeBatches.getActiveBatchCount(), 5);
     }
 
     /*
@@ -577,9 +788,8 @@ contract BribeBatchesTest is Test {
 
         vm.startPrank(depositor);
         rewardToken.approve(address(bribeBatches), totalAmount);
-        uint256 batchId = bribeBatches.createBatchWithExistingBribeContract(
-            address(rewardToken), totalAmount, 10, address(bribeContract)
-        );
+        (address[] memory bribes, uint256[] memory weights) = _singleBribeConfig(address(bribeContract));
+        uint256 batchId = bribeBatches.createBatchWithExistingBribeContract(address(rewardToken), totalAmount, 10, bribes, weights);
         vm.stopPrank();
 
         uint256[] memory batchIds = new uint256[](1);
@@ -600,9 +810,11 @@ contract BribeBatchesTest is Test {
         uint256 batchId = bribeBatches.createBatchWithoutBribeContract(address(rewardToken), totalAmount, 10);
         vm.stopPrank();
 
+        (address[] memory bribes, uint256[] memory weights) = _singleBribeConfig(address(bribeContract));
+
         vm.prank(user1);
         vm.expectRevert();
-        bribeBatches.populateBribeContract(batchId, address(bribeContract));
+        bribeBatches.populateBribeContract(batchId, bribes, weights, true);
     }
 
     function test_RevertWhen_NonAdminStopsBatch() public {
@@ -611,9 +823,8 @@ contract BribeBatchesTest is Test {
 
         vm.startPrank(depositor);
         rewardToken.approve(address(bribeBatches), totalAmount);
-        uint256 batchId = bribeBatches.createBatchWithExistingBribeContract(
-            address(rewardToken), totalAmount, 10, address(bribeContract)
-        );
+        (address[] memory bribes, uint256[] memory weights) = _singleBribeConfig(address(bribeContract));
+        uint256 batchId = bribeBatches.createBatchWithExistingBribeContract(address(rewardToken), totalAmount, 10, bribes, weights);
         vm.stopPrank();
 
         vm.prank(user1);
@@ -641,10 +852,11 @@ contract BribeBatchesTest is Test {
         vm.startPrank(depositor);
         rewardToken.approve(address(bribeBatches), totalAmount * 2);
 
-        uint256 batchId1 =
-            bribeBatches.createBatchWithExistingBribeContract(address(rewardToken), totalAmount, 5, address(bribe1));
-        uint256 batchId2 =
-            bribeBatches.createBatchWithExistingBribeContract(address(rewardToken), totalAmount, 10, address(bribe2));
+        (address[] memory bribes1, uint256[] memory weights1) = _singleBribeConfig(address(bribe1));
+        (address[] memory bribes2, uint256[] memory weights2) = _singleBribeConfig(address(bribe2));
+
+        uint256 batchId1 = bribeBatches.createBatchWithExistingBribeContract(address(rewardToken), totalAmount, 5, bribes1, weights1);
+        uint256 batchId2 = bribeBatches.createBatchWithExistingBribeContract(address(rewardToken), totalAmount, 10, bribes2, weights2);
         vm.stopPrank();
 
         uint256[] memory batchIds = new uint256[](2);
@@ -681,14 +893,11 @@ contract BribeBatchesTest is Test {
         vm.startPrank(depositor);
         rewardToken.approve(address(bribeBatches), totalAmount * 3);
 
-        uint256 batchId1 = bribeBatches.createBatchWithExistingBribeContract(
-            address(rewardToken), totalAmount, 10, address(bribeContract)
-        );
-        uint256 batchId2 =
-            bribeBatches.createBatchWithoutBribeContract(address(rewardToken), totalAmount, 10);
-        uint256 batchId3 = bribeBatches.createBatchWithExistingBribeContract(
-            address(rewardToken), totalAmount, 10, address(bribeContract)
-        );
+        (address[] memory bribes, uint256[] memory weights) = _singleBribeConfig(address(bribeContract));
+
+        uint256 batchId1 = bribeBatches.createBatchWithExistingBribeContract(address(rewardToken), totalAmount, 10, bribes, weights);
+        uint256 batchId2 = bribeBatches.createBatchWithoutBribeContract(address(rewardToken), totalAmount, 10);
+        uint256 batchId3 = bribeBatches.createBatchWithExistingBribeContract(address(rewardToken), totalAmount, 10, bribes, weights);
         vm.stopPrank();
 
         assertEq(batchId1, 0);
