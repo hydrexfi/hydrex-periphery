@@ -138,20 +138,31 @@ contract LiquidAccountConduitMulti is AccessControl, IERC721Receiver {
             }
         }
 
-        // Step 2: Claim from external distributors
-        for (uint256 i = 0; i < _distributorTargets.length; i++) {
-            uint256 balanceBefore = IERC20(optionsToken).balanceOf(address(this));
+        // Step 2: Claim from external distributors (may send oHYDX to user or conduit)
+        {
+            uint256 userBalanceBefore = IERC20(optionsToken).balanceOf(_user);
+            uint256 conduitBalanceBefore = IERC20(optionsToken).balanceOf(address(this));
 
-            // Execute arbitrary call to distributor
-            (bool success, ) = _distributorTargets[i].call(_distributorCalldata[i]);
-            if (!success) revert DistributorCallFailed();
+            for (uint256 i = 0; i < _distributorTargets.length; i++) {
+                (bool success, ) = _distributorTargets[i].call(_distributorCalldata[i]);
+                if (!success) revert DistributorCallFailed();
+            }
 
-            uint256 balanceAfter = IERC20(optionsToken).balanceOf(address(this));
-            uint256 claimedFromDistributor = balanceAfter - balanceBefore;
+            uint256 userBalanceAfter = IERC20(optionsToken).balanceOf(_user);
+            uint256 conduitBalanceAfter = IERC20(optionsToken).balanceOf(address(this));
 
-            if (claimedFromDistributor > 0) {
-                emit OptionsHarvestedFromDistributor(_distributorTargets[i], claimedFromDistributor, _user);
-                totalOptionsClaimed += claimedFromDistributor;
+            uint256 claimedToUser = userBalanceAfter - userBalanceBefore;
+            uint256 claimedToConduit = conduitBalanceAfter - conduitBalanceBefore;
+
+            // Pull user's portion to conduit (user has pre-approved)
+            if (claimedToUser > 0) {
+                IERC20(optionsToken).transferFrom(_user, address(this), claimedToUser);
+            }
+
+            uint256 totalFromDistributors = claimedToUser + claimedToConduit;
+            if (totalFromDistributors > 0) {
+                emit OptionsHarvestedFromDistributor(address(0), totalFromDistributors, _user);
+                totalOptionsClaimed += totalFromDistributors;
             }
         }
 
