@@ -25,7 +25,7 @@ contract FlexAccountClaims is AccessControl {
     using SafeERC20 for IERC20;
 
     /// @notice The veNFT contract address (hardcoded)
-    address public constant VENFT = 0x9ee81fD729b91095563fE6dA11c1fE92C52F9728;
+    address public constant VENFT = 0x25B2ED7149fb8A05f6eF9407d9c8F878f59cd1e1;
 
     /// @notice The oHYDX options token address (hardcoded)
     address public constant OHYDX = 0xA1136031150E50B015b41f1ca6B2e99e49D8cB78;
