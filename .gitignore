@@ -13,7 +13,6 @@ node_modules
 /hardhat/typechain-types
 /cache_forge
 /out
-/lib
 /todo.md
 
 # TypeChain files
