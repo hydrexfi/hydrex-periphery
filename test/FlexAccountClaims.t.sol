@@ -85,7 +85,7 @@ contract FlexAccountClaimsTest is Test {
     }
 
     function testConstants() public view {
-        assertEq(claims.VENFT(), 0x9ee81fD729b91095563fE6dA11c1fE92C52F9728);
+        assertEq(claims.VENFT(), 0x25B2ED7149fb8A05f6eF9407d9c8F878f59cd1e1);
         assertEq(claims.OHYDX(), 0xA1136031150E50B015b41f1ca6B2e99e49D8cB78);
     }
 
