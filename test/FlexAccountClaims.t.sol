@@ -56,11 +56,11 @@ contract FlexAccountClaimsTest is Test {
         ohydx = new MockOHYDX();
 
         // Etch the mock contracts at the hardcoded addresses
-        vm.etch(0x9ee81fD729b91095563fE6dA11c1fE92C52F9728, address(venft).code);
+        vm.etch(0x25B2ED7149fb8A05f6eF9407d9c8F878f59cd1e1, address(venft).code);
         vm.etch(0xA1136031150E50B015b41f1ca6B2e99e49D8cB78, address(ohydx).code);
 
         // Update references to use hardcoded addresses
-        venft = MockVeNFT(0x9ee81fD729b91095563fE6dA11c1fE92C52F9728);
+        venft = MockVeNFT(0x25B2ED7149fb8A05f6eF9407d9c8F878f59cd1e1);
         ohydx = MockOHYDX(0xA1136031150E50B015b41f1ca6B2e99e49D8cB78);
 
         // Mint NFTs
