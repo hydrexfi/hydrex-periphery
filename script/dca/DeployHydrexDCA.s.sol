@@ -25,11 +25,12 @@ contract DeployHydrexDCA is Script {
         console2.log("Deployer:", deployer);
         console2.log("Admin:", admin);
         console2.log("Operator:", admin);
+        console2.log("Fee Recipient:", admin);
         console2.log("\n=== Starting Deployment ===");
 
         vm.startBroadcast(deployerKey);
 
-        HydrexDCA dca = new HydrexDCA(admin, admin);
+        HydrexDCA dca = new HydrexDCA(admin, admin, admin);
         dca.whitelistRouters(routers);
 
         vm.stopBroadcast();
@@ -38,7 +39,9 @@ contract DeployHydrexDCA is Script {
         console2.log("HydrexDCA deployed at:", address(dca));
         console2.log("Admin address:", admin);
         console2.log("Operator address:", admin);
-        console2.log("Minimum interval:", dca.minimumInterval(), "seconds");
+        console2.log("Fee Recipient:", dca.feeRecipient());
+        console2.log("Protocol Fee (bps):", dca.protocolFeeBps());
+        console2.log("Minimum interval (seconds):", dca.minimumInterval());
         console2.log("Routers whitelisted:", routers.length);
         console2.log("  - KyberSwap:", routers[0]);
 

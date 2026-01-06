@@ -44,6 +44,18 @@ contract HydrexDCA is AccessControl, ReentrancyGuard {
     /// @notice Minimum interval between swaps (default 1 minute)
     uint256 public minimumInterval = 1 minutes;
 
+    /// @notice Protocol fee in basis points (default 50 = 0.5%)
+    uint256 public protocolFeeBps = 50;
+
+    /// @notice Fee recipient address
+    address public feeRecipient;
+
+    /// @notice Maximum fee in basis points (10% cap)
+    uint256 public constant MAX_FEE_BPS = 1000;
+
+    /// @notice Maximum number of swaps per order (default 100)
+    uint256 public maxSwaps = 100;
+
     /*
      * Structs
      */
@@ -62,10 +74,13 @@ contract HydrexDCA is AccessControl, ReentrancyGuard {
         address tokenOut;
         uint256 totalAmount;
         uint256 remainingAmount;
+        uint256 numberOfSwaps;
+        uint256 swapsExecuted;
         uint256 amountPerSwap;
         uint256 interval;
         uint256 lastExecutionTime;
         uint256 minAmountOut;
+        uint256 createdAt;
         OrderStatus status;
     }
 
@@ -90,6 +105,7 @@ contract HydrexDCA is AccessControl, ReentrancyGuard {
         address tokenIn,
         address tokenOut,
         uint256 totalAmount,
+        uint256 numberOfSwaps,
         uint256 amountPerSwap,
         uint256 interval
     );
@@ -123,6 +139,15 @@ contract HydrexDCA is AccessControl, ReentrancyGuard {
     /// @notice Emitted when minimum interval is updated
     event MinimumIntervalUpdated(uint256 oldInterval, uint256 newInterval);
 
+    /// @notice Emitted when protocol fee is updated
+    event ProtocolFeeUpdated(uint256 oldFeeBps, uint256 newFeeBps);
+
+    /// @notice Emitted when fee recipient is updated
+    event FeeRecipientUpdated(address oldRecipient, address newRecipient);
+
+    /// @notice Emitted when max swaps is updated
+    event MaxSwapsUpdated(uint256 oldMaxSwaps, uint256 newMaxSwaps);
+
     /*
      * Errors
      */
@@ -140,6 +165,8 @@ contract HydrexDCA is AccessControl, ReentrancyGuard {
     error IntervalNotMet();
     error InvalidOrderParameters();
     error IntervalTooShort();
+    error FeeTooHigh();
+    error InvalidFeeRecipient();
 
     /*
      * Constructor
@@ -149,12 +176,15 @@ contract HydrexDCA is AccessControl, ReentrancyGuard {
      * @notice Initialize the HydrexDCA contract
      * @param _admin Address granted `DEFAULT_ADMIN_ROLE`
      * @param _operator Address granted `OPERATOR_ROLE`
+     * @param _feeRecipient Address to receive protocol fees
      */
-    constructor(address _admin, address _operator) {
+    constructor(address _admin, address _operator, address _feeRecipient) {
         if (_admin == address(0) || _operator == address(0)) revert InvalidAddress();
+        if (_feeRecipient == address(0)) revert InvalidFeeRecipient();
 
         _grantRole(DEFAULT_ADMIN_ROLE, _admin);
         _grantRole(OPERATOR_ROLE, _operator);
+        feeRecipient = _feeRecipient;
     }
 
     /*
@@ -165,8 +195,8 @@ contract HydrexDCA is AccessControl, ReentrancyGuard {
      * @notice Create a new DCA order (supports both ERC20 and native ETH)
      * @param tokenIn Input token address (use 0xEeee...eEeE for native ETH)
      * @param tokenOut Output token address
-     * @param totalAmount Total amount of input tokens to DCA (ignored for ETH, uses msg.value)
-     * @param amountPerSwap Amount to swap per execution
+     * @param totalAmount Total amount of input tokens to DCA
+     * @param numberOfSwaps Number of times to execute swaps
      * @param interval Minimum time between swaps (in seconds)
      * @param minAmountOut Minimum output amount per swap (slippage protection)
      */
@@ -174,41 +204,38 @@ contract HydrexDCA is AccessControl, ReentrancyGuard {
         address tokenIn,
         address tokenOut,
         uint256 totalAmount,
-        uint256 amountPerSwap,
+        uint256 numberOfSwaps,
         uint256 interval,
         uint256 minAmountOut
     ) external payable nonReentrant returns (uint256 orderId) {
         if (tokenOut == address(0)) revert InvalidAddress();
-        if (amountPerSwap == 0) revert InvalidAmounts();
+        if (numberOfSwaps < 2 || numberOfSwaps > maxSwaps) revert InvalidAmounts();
 
         bool isETH = tokenIn == 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE;
-        uint256 actualAmount;
 
         if (isETH) {
             // Native ETH order
             if (msg.value == 0) revert InvalidAmounts();
-            if (totalAmount != 0 && totalAmount != msg.value) revert InvalidAmounts();
-            if (amountPerSwap > msg.value) revert InvalidAmounts();
-            actualAmount = msg.value;
+            if (totalAmount == 0) revert InvalidAmounts();
+            if (totalAmount != msg.value) revert InvalidAmounts();
         } else {
             // ERC20 order
             if (tokenIn == address(0)) revert InvalidOrderParameters();
             if (totalAmount == 0) revert InvalidAmounts();
             if (msg.value > 0) revert InvalidOrderParameters();
 
-            // Measure actual amount received (handles tax/reflect tokens)
+            // Measure actual amount received and validate it matches expected
             uint256 balanceBefore = IERC20(tokenIn).balanceOf(address(this));
             IERC20(tokenIn).safeTransferFrom(msg.sender, address(this), totalAmount);
             uint256 balanceAfter = IERC20(tokenIn).balanceOf(address(this));
-            actualAmount = balanceAfter - balanceBefore;
+            uint256 actualReceived = balanceAfter - balanceBefore;
 
-            // Validate we received something and amountPerSwap is reasonable
-            if (actualAmount == 0) revert InvalidAmounts();
-            if (amountPerSwap > actualAmount) revert InvalidAmounts();
+            // Validate we received exactly what was expected
+            if (actualReceived != totalAmount) revert InvalidAmounts();
         }
 
         // Create order
-        orderId = _createOrder(msg.sender, tokenIn, tokenOut, actualAmount, amountPerSwap, interval, minAmountOut);
+        orderId = _createOrder(msg.sender, tokenIn, tokenOut, totalAmount, numberOfSwaps, interval, minAmountOut);
     }
 
     /**
@@ -261,12 +288,15 @@ contract HydrexDCA is AccessControl, ReentrancyGuard {
         address tokenIn,
         address tokenOut,
         uint256 totalAmount,
-        uint256 amountPerSwap,
+        uint256 numberOfSwaps,
         uint256 interval,
         uint256 minAmountOut
     ) internal returns (uint256 orderId) {
         // Validate interval meets minimum
         if (interval < minimumInterval) revert IntervalTooShort();
+
+        // Calculate amount per swap
+        uint256 amountPerSwap = totalAmount / numberOfSwaps;
 
         orderId = orderCounter++;
 
@@ -276,16 +306,19 @@ contract HydrexDCA is AccessControl, ReentrancyGuard {
             tokenOut: tokenOut,
             totalAmount: totalAmount,
             remainingAmount: totalAmount,
+            numberOfSwaps: numberOfSwaps,
+            swapsExecuted: 0,
             amountPerSwap: amountPerSwap,
             interval: interval,
             lastExecutionTime: 0,
             minAmountOut: minAmountOut,
+            createdAt: block.timestamp,
             status: OrderStatus.Active
         });
 
         userOrders[user].push(orderId);
 
-        emit OrderCreated(orderId, user, tokenIn, tokenOut, totalAmount, amountPerSwap, interval);
+        emit OrderCreated(orderId, user, tokenIn, tokenOut, totalAmount, numberOfSwaps, amountPerSwap, interval);
     }
 
     /**
@@ -366,21 +399,26 @@ contract HydrexDCA is AccessControl, ReentrancyGuard {
 
         // Update order state
         order.remainingAmount -= swap.amountIn;
+        order.swapsExecuted += 1;
         order.lastExecutionTime = block.timestamp;
 
-        // Transfer minimum amount to user
-        _transfer(order.tokenOut, order.user, swap.minAmountOut);
+        // Calculate protocol fee
+        uint256 protocolFee = (returnAmount * protocolFeeBps) / 10000;
+        uint256 userAmount = returnAmount - protocolFee;
 
-        // Calculate and transfer fee
-        uint256 feeAmount = returnAmount - swap.minAmountOut;
-        address feeDestination = swap.feeRecipient == address(0) ? _msgSender() : swap.feeRecipient;
-
-        if (feeAmount > 0) {
-            _transfer(order.tokenOut, feeDestination, feeAmount);
+        // Transfer to user
+        if (userAmount > 0) {
+            _transfer(order.tokenOut, order.user, userAmount);
         }
 
-        // Check if order is completed
-        if (order.remainingAmount == 0) {
+        // Transfer protocol fee
+        uint256 feeAmount = protocolFee;
+        if (feeAmount > 0) {
+            _transfer(order.tokenOut, feeRecipient, feeAmount);
+        }
+
+        // Check if order is completed (all swaps executed or no remaining amount)
+        if (order.swapsExecuted >= order.numberOfSwaps || order.remainingAmount == 0) {
             order.status = OrderStatus.Completed;
             emit OrderCompleted(swap.orderId, order.user);
         }
@@ -476,23 +514,23 @@ contract HydrexDCA is AccessControl, ReentrancyGuard {
     }
 
     /**
-     * @notice Get paginated order IDs for a user
+     * @notice Get paginated orders with full details for a user
      * @param user User address
      * @param offset Starting index
      * @param limit Maximum number of orders to return
-     * @return orderIds Array of order IDs
+     * @return userOrdersData Array of full order details
      * @return total Total number of orders for the user
      */
     function getUserOrdersPaginated(
         address user,
         uint256 offset,
         uint256 limit
-    ) external view returns (uint256[] memory orderIds, uint256 total) {
-        uint256[] storage allOrders = userOrders[user];
-        total = allOrders.length;
+    ) external view returns (Order[] memory userOrdersData, uint256 total) {
+        uint256[] storage allOrderIds = userOrders[user];
+        total = allOrderIds.length;
 
         if (offset >= total) {
-            return (new uint256[](0), total);
+            return (new Order[](0), total);
         }
 
         uint256 end = offset + limit;
@@ -501,10 +539,10 @@ contract HydrexDCA is AccessControl, ReentrancyGuard {
         }
 
         uint256 resultLength = end - offset;
-        orderIds = new uint256[](resultLength);
+        userOrdersData = new Order[](resultLength);
 
         for (uint256 i = 0; i < resultLength; i++) {
-            orderIds[i] = allOrders[offset + i];
+            userOrdersData[i] = orders[allOrderIds[offset + i]];
         }
     }
 
@@ -525,6 +563,39 @@ contract HydrexDCA is AccessControl, ReentrancyGuard {
         uint256 oldInterval = minimumInterval;
         minimumInterval = newMinimumInterval;
         emit MinimumIntervalUpdated(oldInterval, newMinimumInterval);
+    }
+
+    /**
+     * @notice Set protocol fee in basis points
+     * @param newFeeBps New fee in basis points (max 1000 = 10%)
+     */
+    function setProtocolFee(uint256 newFeeBps) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (newFeeBps > MAX_FEE_BPS) revert FeeTooHigh();
+        uint256 oldFeeBps = protocolFeeBps;
+        protocolFeeBps = newFeeBps;
+        emit ProtocolFeeUpdated(oldFeeBps, newFeeBps);
+    }
+
+    /**
+     * @notice Set fee recipient address
+     * @param newFeeRecipient New fee recipient address
+     */
+    function setFeeRecipient(address newFeeRecipient) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (newFeeRecipient == address(0)) revert InvalidFeeRecipient();
+        address oldRecipient = feeRecipient;
+        feeRecipient = newFeeRecipient;
+        emit FeeRecipientUpdated(oldRecipient, newFeeRecipient);
+    }
+
+    /**
+     * @notice Set maximum number of swaps per order
+     * @param newMaxSwaps New maximum number of swaps (must be >= 2)
+     */
+    function setMaxSwaps(uint256 newMaxSwaps) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (newMaxSwaps < 2) revert InvalidAmounts();
+        uint256 oldMaxSwaps = maxSwaps;
+        maxSwaps = newMaxSwaps;
+        emit MaxSwapsUpdated(oldMaxSwaps, newMaxSwaps);
     }
 
     /**
