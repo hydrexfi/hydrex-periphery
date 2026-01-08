@@ -11,8 +11,8 @@ pragma solidity 0.8.26;
 
 */
 
-import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
-import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {AccessControlUpgradeable} from "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
+import {ReentrancyGuardUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {Address} from "@openzeppelin/contracts/utils/Address.sol";
@@ -22,7 +22,7 @@ import {Address} from "@openzeppelin/contracts/utils/Address.sol";
  * @notice Dollar Cost Averaging (DCA) protocol for automated token swaps
  * @dev Custodial protocol that holds user funds and executes DCA orders
  */
-contract HydrexDCA is AccessControl, ReentrancyGuard {
+contract HydrexDCA is AccessControlUpgradeable, ReentrancyGuardUpgradeable {
     using SafeERC20 for IERC20;
     using Address for address;
 
@@ -42,10 +42,10 @@ contract HydrexDCA is AccessControl, ReentrancyGuard {
     mapping(address => uint256[]) public userOrders;
 
     /// @notice Minimum interval between swaps (default 1 minute)
-    uint256 public minimumInterval = 1 minutes;
+    uint256 public minimumInterval;
 
     /// @notice Protocol fee in basis points (default 50 = 0.5%)
-    uint256 public protocolFeeBps = 50;
+    uint256 public protocolFeeBps;
 
     /// @notice Fee recipient address
     address public feeRecipient;
@@ -54,7 +54,7 @@ contract HydrexDCA is AccessControl, ReentrancyGuard {
     uint256 public constant MAX_FEE_BPS = 1000;
 
     /// @notice Maximum number of swaps per order (default 100)
-    uint256 public maxSwaps = 100;
+    uint256 public maxSwaps;
 
     /*
      * Structs
@@ -169,7 +169,7 @@ contract HydrexDCA is AccessControl, ReentrancyGuard {
     error InvalidFeeRecipient();
 
     /*
-     * Constructor
+     * Initializer
      */
 
     /**
@@ -178,13 +178,21 @@ contract HydrexDCA is AccessControl, ReentrancyGuard {
      * @param _operator Address granted `OPERATOR_ROLE`
      * @param _feeRecipient Address to receive protocol fees
      */
-    constructor(address _admin, address _operator, address _feeRecipient) {
+    function initialize(address _admin, address _operator, address _feeRecipient) public initializer {
         if (_admin == address(0) || _operator == address(0)) revert InvalidAddress();
         if (_feeRecipient == address(0)) revert InvalidFeeRecipient();
+
+        __AccessControl_init();
+        __ReentrancyGuard_init();
 
         _grantRole(DEFAULT_ADMIN_ROLE, _admin);
         _grantRole(OPERATOR_ROLE, _operator);
         feeRecipient = _feeRecipient;
+        
+        // Initialize default values
+        minimumInterval = 1 minutes;
+        protocolFeeBps = 50;
+        maxSwaps = 100;
     }
 
     /*
