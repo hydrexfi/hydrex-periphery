@@ -59,6 +59,32 @@ contract HydrexDCATest is Test {
     address public user = address(0x3);
     address public feeRecipient = address(0x4);
 
+    // Default order parameters
+    uint256 constant DEFAULT_MIN_USD_PRICE = 0; // No min
+    uint256 constant DEFAULT_MAX_USD_PRICE = 0; // No max
+    uint256 constant DEFAULT_SLIPPAGE = 50; // 0.5%
+
+    // Helper function to create order params
+    function _createOrderParams(
+        address _tokenIn,
+        address _tokenOut,
+        uint256 totalAmount,
+        uint256 numberOfSwaps,
+        uint256 interval
+    ) internal pure returns (HydrexDCA.OrderCreateParams memory) {
+        return
+            HydrexDCA.OrderCreateParams({
+                tokenIn: _tokenIn,
+                tokenOut: _tokenOut,
+                totalAmount: totalAmount,
+                numberOfSwaps: numberOfSwaps,
+                interval: interval,
+                minUsdPrice: DEFAULT_MIN_USD_PRICE,
+                maxUsdPrice: DEFAULT_MAX_USD_PRICE,
+                slippageTolerance: DEFAULT_SLIPPAGE
+            });
+    }
+
     function setUp() public {
         // Deploy contracts
         dca = new HydrexDCA(admin, operator, feeRecipient);
@@ -88,19 +114,25 @@ contract HydrexDCATest is Test {
         uint256 totalAmount = 100 ether;
         uint256 numberOfSwaps = 10;
         uint256 interval = 1 days;
-        uint256 minAmountOut = 9 ether;
+        uint256 minUsdPrice = 1e18; // $1
+        uint256 maxUsdPrice = 2e18; // $2
+        uint256 slippageTolerance = 50; // 0.5%
 
         vm.startPrank(user);
         tokenIn.approve(address(dca), totalAmount);
 
-        uint256 orderId = dca.createOrder(
-            address(tokenIn),
-            address(tokenOut),
-            totalAmount,
-            numberOfSwaps,
-            interval,
-            minAmountOut
-        );
+        HydrexDCA.OrderCreateParams memory params = HydrexDCA.OrderCreateParams({
+            tokenIn: address(tokenIn),
+            tokenOut: address(tokenOut),
+            totalAmount: totalAmount,
+            numberOfSwaps: numberOfSwaps,
+            interval: interval,
+            minUsdPrice: minUsdPrice,
+            maxUsdPrice: maxUsdPrice,
+            slippageTolerance: slippageTolerance
+        });
+
+        uint256 orderId = dca.createOrder(params);
         vm.stopPrank();
 
         // Verify order
@@ -114,8 +146,10 @@ contract HydrexDCATest is Test {
         assertEq(order.swapsExecuted, 0);
         assertEq(order.amountPerSwap, 10 ether); // 100 / 10
         assertEq(order.interval, interval);
-        assertEq(order.minAmountOut, minAmountOut);
         assertEq(uint256(order.status), uint256(HydrexDCA.OrderStatus.Active));
+        assertEq(order.routerConfig.minUsdPrice, minUsdPrice);
+        assertEq(order.routerConfig.maxUsdPrice, maxUsdPrice);
+        assertEq(order.routerConfig.slippageTolerance, slippageTolerance);
 
         // Verify balance transferred
         assertEq(tokenIn.balanceOf(address(dca)), totalAmount);
@@ -132,12 +166,13 @@ contract HydrexDCATest is Test {
 
         vm.prank(user);
         uint256 orderId = dca.createOrder{value: totalAmount}(
-            0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE,
-            address(tokenOut),
-            totalAmount,
-            numberOfSwaps,
-            interval,
-            minAmountOut
+            _createOrderParams(
+                0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE,
+                address(tokenOut),
+                totalAmount,
+                numberOfSwaps,
+                interval
+            )
         );
 
         // Verify order
@@ -161,12 +196,13 @@ contract HydrexDCATest is Test {
         vm.prank(user);
         vm.expectRevert(HydrexDCA.InvalidAmounts.selector);
         dca.createOrder{value: 1 ether}(
-            0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE,
-            address(tokenOut),
-            0, // totalAmount = 0, should revert
-            numberOfSwaps,
-            interval,
-            minAmountOut
+            _createOrderParams(
+                0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE,
+                address(tokenOut),
+                0, // totalAmount = 0, should revert
+                numberOfSwaps,
+                interval
+            )
         );
     }
 
@@ -175,13 +211,13 @@ contract HydrexDCATest is Test {
         tokenIn.approve(address(dca), 100 ether);
 
         vm.expectRevert(HydrexDCA.InvalidAmounts.selector);
-        dca.createOrder(address(tokenIn), address(tokenOut), 0, 10, 1 days, 9 ether);
+        dca.createOrder(_createOrderParams(address(tokenIn), address(tokenOut), 0, 10, 1 days));
 
         vm.expectRevert(HydrexDCA.InvalidAmounts.selector);
-        dca.createOrder(address(tokenIn), address(tokenOut), 100 ether, 0, 1 days, 9 ether);
+        dca.createOrder(_createOrderParams(address(tokenIn), address(tokenOut), 100 ether, 0, 1 days));
 
         vm.expectRevert(HydrexDCA.InvalidAmounts.selector);
-        dca.createOrder(address(tokenIn), address(tokenOut), 100 ether, 1, 1 days, 9 ether);
+        dca.createOrder(_createOrderParams(address(tokenIn), address(tokenOut), 100 ether, 1, 1 days));
 
         vm.stopPrank();
     }
@@ -192,12 +228,13 @@ contract HydrexDCATest is Test {
         vm.prank(user);
         vm.expectRevert(HydrexDCA.InvalidAmounts.selector);
         dca.createOrder{value: 1 ether}(
-            0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE,
-            address(tokenOut),
-            2 ether, // Mismatch with msg.value
-            10,
-            1 hours,
-            100 ether
+            _createOrderParams(
+                0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE,
+                address(tokenOut),
+                2 ether, // Mismatch with msg.value
+                10,
+                1 hours
+            )
         );
     }
 
@@ -209,12 +246,7 @@ contract HydrexDCATest is Test {
         (bool success, ) = address(dca).call{value: 1 ether}(
             abi.encodeWithSelector(
                 HydrexDCA.createOrder.selector,
-                address(tokenIn),
-                address(tokenOut),
-                100 ether,
-                10,
-                1 days,
-                9 ether
+                _createOrderParams(address(tokenIn), address(tokenOut), 100 ether, 10, 1 days)
             )
         );
 
@@ -236,12 +268,7 @@ contract HydrexDCATest is Test {
         vm.startPrank(user);
         tokenIn.approve(address(dca), totalAmount);
         uint256 orderId = dca.createOrder(
-            address(tokenIn),
-            address(tokenOut),
-            totalAmount,
-            numberOfSwaps,
-            1 days,
-            minAmountOut
+            _createOrderParams(address(tokenIn), address(tokenOut), totalAmount, numberOfSwaps, 1 days)
         );
         vm.stopPrank();
 
@@ -263,7 +290,6 @@ contract HydrexDCATest is Test {
         swaps[0] = HydrexDCA.SwapData({
             orderId: orderId,
             amountIn: amountPerSwap,
-            minAmountOut: minAmountOut,
             router: address(router),
             routerCalldata: swapCalldata,
             feeRecipient: feeRecipient
@@ -295,12 +321,13 @@ contract HydrexDCATest is Test {
         vm.deal(user, 10 ether);
         vm.prank(user);
         uint256 orderId = dca.createOrder{value: totalAmount}(
-            0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE,
-            address(tokenOut),
-            totalAmount,
-            numberOfSwaps,
-            1 hours,
-            minAmountOut
+            _createOrderParams(
+                0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE,
+                address(tokenOut),
+                totalAmount,
+                numberOfSwaps,
+                1 hours
+            )
         );
 
         uint256 amountPerSwap = 0.1 ether; // 1 / 10
@@ -320,7 +347,6 @@ contract HydrexDCATest is Test {
         swaps[0] = HydrexDCA.SwapData({
             orderId: orderId,
             amountIn: amountPerSwap,
-            minAmountOut: minAmountOut,
             router: address(router),
             routerCalldata: swapCalldata,
             feeRecipient: feeRecipient
@@ -347,12 +373,7 @@ contract HydrexDCATest is Test {
         vm.startPrank(user);
         tokenIn.approve(address(dca), totalAmount);
         uint256 orderId = dca.createOrder(
-            address(tokenIn),
-            address(tokenOut),
-            totalAmount,
-            2, // numberOfSwaps
-            1 days,
-            minAmountOut
+            _createOrderParams(address(tokenIn), address(tokenOut), totalAmount, 2, 1 days)
         );
         vm.stopPrank();
 
@@ -370,7 +391,6 @@ contract HydrexDCATest is Test {
         swaps[0] = HydrexDCA.SwapData({
             orderId: orderId,
             amountIn: amountPerSwap,
-            minAmountOut: minAmountOut,
             router: address(router),
             routerCalldata: swapCalldata,
             feeRecipient: feeRecipient
@@ -401,7 +421,9 @@ contract HydrexDCATest is Test {
         // Create order
         vm.startPrank(user);
         tokenIn.approve(address(dca), 100 ether);
-        uint256 orderId = dca.createOrder(address(tokenIn), address(tokenOut), 100 ether, 10, 1 days, 9 ether);
+        uint256 orderId = dca.createOrder(
+            _createOrderParams(address(tokenIn), address(tokenOut), 100 ether, 10, 1 days)
+        );
         vm.stopPrank();
 
         router.setOutputAmount(10 ether);
@@ -418,7 +440,6 @@ contract HydrexDCATest is Test {
         swaps[0] = HydrexDCA.SwapData({
             orderId: orderId,
             amountIn: 10 ether,
-            minAmountOut: 9 ether,
             router: address(router),
             routerCalldata: swapCalldata,
             feeRecipient: feeRecipient
@@ -446,7 +467,9 @@ contract HydrexDCATest is Test {
         // Create order
         vm.startPrank(user);
         tokenIn.approve(address(dca), 100 ether);
-        uint256 orderId = dca.createOrder(address(tokenIn), address(tokenOut), 100 ether, 10, 1 days, 9 ether);
+        uint256 orderId = dca.createOrder(
+            _createOrderParams(address(tokenIn), address(tokenOut), 100 ether, 10, 1 days)
+        );
         vm.stopPrank();
 
         // Make router fail
@@ -464,7 +487,6 @@ contract HydrexDCATest is Test {
         swaps[0] = HydrexDCA.SwapData({
             orderId: orderId,
             amountIn: 10 ether,
-            minAmountOut: 9 ether,
             router: address(router),
             routerCalldata: swapCalldata,
             feeRecipient: feeRecipient
@@ -490,7 +512,9 @@ contract HydrexDCATest is Test {
         // Create order
         vm.startPrank(user);
         tokenIn.approve(address(dca), 100 ether);
-        uint256 orderId = dca.createOrder(address(tokenIn), address(tokenOut), 100 ether, 10, 1 days, 9 ether);
+        uint256 orderId = dca.createOrder(
+            _createOrderParams(address(tokenIn), address(tokenOut), 100 ether, 10, 1 days)
+        );
         vm.stopPrank();
 
         uint256 userBalanceBefore = tokenIn.balanceOf(user);
@@ -514,12 +538,7 @@ contract HydrexDCATest is Test {
         vm.deal(user, 10 ether);
         vm.prank(user);
         uint256 orderId = dca.createOrder{value: 1 ether}(
-            0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE,
-            address(tokenOut),
-            1 ether,
-            10, // numberOfSwaps
-            1 hours,
-            100 ether
+            _createOrderParams(0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE, address(tokenOut), 1 ether, 10, 1 hours)
         );
 
         uint256 userBalanceBefore = user.balance;
@@ -537,7 +556,9 @@ contract HydrexDCATest is Test {
         // Create and execute one swap
         vm.startPrank(user);
         tokenIn.approve(address(dca), 100 ether);
-        uint256 orderId = dca.createOrder(address(tokenIn), address(tokenOut), 100 ether, 10, 1 days, 9 ether);
+        uint256 orderId = dca.createOrder(
+            _createOrderParams(address(tokenIn), address(tokenOut), 100 ether, 10, 1 days)
+        );
         vm.stopPrank();
 
         router.setOutputAmount(10 ether);
@@ -554,7 +575,6 @@ contract HydrexDCATest is Test {
         swaps[0] = HydrexDCA.SwapData({
             orderId: orderId,
             amountIn: 10 ether,
-            minAmountOut: 9 ether,
             router: address(router),
             routerCalldata: swapCalldata,
             feeRecipient: feeRecipient
@@ -576,7 +596,9 @@ contract HydrexDCATest is Test {
     function test_RevertWhen_UnauthorizedCancellation() public {
         vm.startPrank(user);
         tokenIn.approve(address(dca), 100 ether);
-        uint256 orderId = dca.createOrder(address(tokenIn), address(tokenOut), 100 ether, 10, 1 days, 9 ether);
+        uint256 orderId = dca.createOrder(
+            _createOrderParams(address(tokenIn), address(tokenOut), 100 ether, 10, 1 days)
+        );
         vm.stopPrank();
 
         vm.prank(address(0x999));
@@ -587,7 +609,9 @@ contract HydrexDCATest is Test {
     function test_RevertWhen_CancelNonActiveOrder() public {
         vm.startPrank(user);
         tokenIn.approve(address(dca), 100 ether);
-        uint256 orderId = dca.createOrder(address(tokenIn), address(tokenOut), 100 ether, 10, 1 days, 9 ether);
+        uint256 orderId = dca.createOrder(
+            _createOrderParams(address(tokenIn), address(tokenOut), 100 ether, 10, 1 days)
+        );
         dca.cancelOrder(orderId);
 
         vm.expectRevert(HydrexDCA.OrderNotActive.selector);
@@ -603,9 +627,15 @@ contract HydrexDCATest is Test {
         vm.startPrank(user);
         tokenIn.approve(address(dca), 300 ether);
 
-        uint256 orderId1 = dca.createOrder(address(tokenIn), address(tokenOut), 100 ether, 10, 1 days, 9 ether);
-        uint256 orderId2 = dca.createOrder(address(tokenIn), address(tokenOut), 100 ether, 10, 1 days, 9 ether);
-        uint256 orderId3 = dca.createOrder(address(tokenIn), address(tokenOut), 100 ether, 10, 1 days, 9 ether);
+        uint256 orderId1 = dca.createOrder(
+            _createOrderParams(address(tokenIn), address(tokenOut), 100 ether, 10, 1 days)
+        );
+        uint256 orderId2 = dca.createOrder(
+            _createOrderParams(address(tokenIn), address(tokenOut), 100 ether, 10, 1 days)
+        );
+        uint256 orderId3 = dca.createOrder(
+            _createOrderParams(address(tokenIn), address(tokenOut), 100 ether, 10, 1 days)
+        );
         vm.stopPrank();
 
         uint256[] memory userOrders = dca.getUserOrders(user);
