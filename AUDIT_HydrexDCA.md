@@ -48,6 +48,8 @@ The HydrexDCA contract is a custodial Dollar-Cost Averaging protocol that holds 
 uint256[50] private __gap;
 ```
 
+**Status:** ✅ RESOLVED - Added 50-slot storage gap at end of contract.
+
 ---
 
 ### 31. **Initializer Not Protected Against Re-initialization (MEDIUM)**
@@ -70,6 +72,8 @@ function initialize(address _admin, address _operator, address _feeRecipient) pu
     // ... existing code
 }
 ```
+
+**Status:** ✅ RESOLVED - Added constructor with `_disableInitializers()` call.
 
 ---
 
