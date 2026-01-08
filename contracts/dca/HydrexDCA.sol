@@ -67,6 +67,13 @@ contract HydrexDCA is AccessControl, ReentrancyGuard {
         Cancelled
     }
 
+    /// @notice Price and slippage configuration for orders
+    struct RouterConfig {
+        uint256 minUsdPrice;
+        uint256 maxUsdPrice;
+        uint256 slippageTolerance; // basis points, max 10000
+    }
+
     /// @notice DCA order stored onchain
     struct Order {
         address user;
@@ -74,21 +81,32 @@ contract HydrexDCA is AccessControl, ReentrancyGuard {
         address tokenOut;
         uint256 totalAmount;
         uint256 remainingAmount;
-        uint256 numberOfSwaps;
-        uint256 swapsExecuted;
         uint256 amountPerSwap;
-        uint256 interval;
-        uint256 lastExecutionTime;
-        uint256 minAmountOut;
-        uint256 createdAt;
+        uint96 numberOfSwaps;
+        uint96 swapsExecuted;
+        uint32 interval;
+        uint32 lastExecutionTime;
+        uint32 createdAt;
         OrderStatus status;
+        RouterConfig routerConfig;
+    }
+
+    /// @notice Parameters for creating a DCA order
+    struct OrderCreateParams {
+        address tokenIn;
+        address tokenOut;
+        uint256 totalAmount;
+        uint256 numberOfSwaps;
+        uint256 interval;
+        uint256 minUsdPrice;
+        uint256 maxUsdPrice;
+        uint256 slippageTolerance;
     }
 
     /// @notice Parameters for a single DCA swap execution
     struct SwapData {
         uint256 orderId;
         uint256 amountIn;
-        uint256 minAmountOut;
         address router;
         bytes routerCalldata;
         address feeRecipient;
@@ -193,23 +211,21 @@ contract HydrexDCA is AccessControl, ReentrancyGuard {
 
     /**
      * @notice Create a new DCA order (supports both ERC20 and native ETH)
-     * @param tokenIn Input token address (use 0xEeee...eEeE for native ETH)
-     * @param tokenOut Output token address
-     * @param totalAmount Total amount of input tokens to DCA
-     * @param numberOfSwaps Number of times to execute swaps
-     * @param interval Minimum time between swaps (in seconds)
-     * @param minAmountOut Minimum output amount per swap (slippage protection)
+     * @param params Order parameters struct
      */
-    function createOrder(
-        address tokenIn,
-        address tokenOut,
-        uint256 totalAmount,
-        uint256 numberOfSwaps,
-        uint256 interval,
-        uint256 minAmountOut
-    ) external payable nonReentrant returns (uint256 orderId) {
+    function createOrder(OrderCreateParams calldata params) external payable nonReentrant returns (uint256 orderId) {
+        address tokenIn = params.tokenIn;
+        address tokenOut = params.tokenOut;
+        uint256 totalAmount = params.totalAmount;
+        uint256 numberOfSwaps = params.numberOfSwaps;
+        uint256 interval = params.interval;
+        uint256 minUsdPrice = params.minUsdPrice;
+        uint256 maxUsdPrice = params.maxUsdPrice;
+        uint256 slippageTolerance = params.slippageTolerance;
         if (tokenOut == address(0)) revert InvalidAddress();
         if (numberOfSwaps < 2 || numberOfSwaps > maxSwaps) revert InvalidAmounts();
+        if (minUsdPrice > 0 && maxUsdPrice > 0 && minUsdPrice > maxUsdPrice) revert InvalidAmounts();
+        if (slippageTolerance > 10000) revert InvalidAmounts(); // Max 100% slippage
 
         bool isETH = tokenIn == 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE;
 
@@ -235,7 +251,17 @@ contract HydrexDCA is AccessControl, ReentrancyGuard {
         }
 
         // Create order
-        orderId = _createOrder(msg.sender, tokenIn, tokenOut, totalAmount, numberOfSwaps, interval, minAmountOut);
+        orderId = _createOrder(
+            msg.sender,
+            tokenIn,
+            tokenOut,
+            totalAmount,
+            numberOfSwaps,
+            interval,
+            minUsdPrice,
+            maxUsdPrice,
+            slippageTolerance
+        );
     }
 
     /**
@@ -290,7 +316,9 @@ contract HydrexDCA is AccessControl, ReentrancyGuard {
         uint256 totalAmount,
         uint256 numberOfSwaps,
         uint256 interval,
-        uint256 minAmountOut
+        uint256 minUsdPrice,
+        uint256 maxUsdPrice,
+        uint256 slippageTolerance
     ) internal returns (uint256 orderId) {
         // Validate interval meets minimum
         if (interval < minimumInterval) revert IntervalTooShort();
@@ -306,14 +334,18 @@ contract HydrexDCA is AccessControl, ReentrancyGuard {
             tokenOut: tokenOut,
             totalAmount: totalAmount,
             remainingAmount: totalAmount,
-            numberOfSwaps: numberOfSwaps,
-            swapsExecuted: 0,
             amountPerSwap: amountPerSwap,
-            interval: interval,
+            numberOfSwaps: uint96(numberOfSwaps),
+            swapsExecuted: 0,
+            interval: uint32(interval),
             lastExecutionTime: 0,
-            minAmountOut: minAmountOut,
-            createdAt: block.timestamp,
-            status: OrderStatus.Active
+            createdAt: uint32(block.timestamp),
+            status: OrderStatus.Active,
+            routerConfig: RouterConfig({
+                minUsdPrice: minUsdPrice,
+                maxUsdPrice: maxUsdPrice,
+                slippageTolerance: uint16(slippageTolerance)
+            })
         });
 
         userOrders[user].push(orderId);
@@ -391,16 +423,10 @@ contract HydrexDCA is AccessControl, ReentrancyGuard {
         uint256 balanceAfter = _getBalance(order.tokenOut);
         uint256 returnAmount = balanceAfter - balanceBefore;
 
-        // Validate minimum return amount
-        if (swap.minAmountOut != 0 && returnAmount < swap.minAmountOut) {
-            emit DCASwapFailed(swap.orderId, order.user, "Insufficient return amount");
-            return;
-        }
-
         // Update order state
         order.remainingAmount -= swap.amountIn;
         order.swapsExecuted += 1;
-        order.lastExecutionTime = block.timestamp;
+        order.lastExecutionTime = uint32(block.timestamp);
 
         // Calculate protocol fee
         uint256 protocolFee = (returnAmount * protocolFeeBps) / 10000;
@@ -519,18 +545,17 @@ contract HydrexDCA is AccessControl, ReentrancyGuard {
      * @param offset Starting index
      * @param limit Maximum number of orders to return
      * @return userOrdersData Array of full order details
-     * @return total Total number of orders for the user
      */
     function getUserOrdersPaginated(
         address user,
         uint256 offset,
         uint256 limit
-    ) external view returns (Order[] memory userOrdersData, uint256 total) {
+    ) external view returns (Order[] memory userOrdersData) {
         uint256[] storage allOrderIds = userOrders[user];
-        total = allOrderIds.length;
+        uint256 total = allOrderIds.length;
 
         if (offset >= total) {
-            return (new Order[](0), total);
+            return new Order[](0);
         }
 
         uint256 end = offset + limit;
