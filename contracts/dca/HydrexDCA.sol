@@ -11,8 +11,8 @@ pragma solidity 0.8.26;
 
 */
 
-import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
-import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {AccessControlUpgradeable} from "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
+import {ReentrancyGuardUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {Address} from "@openzeppelin/contracts/utils/Address.sol";
@@ -22,12 +22,21 @@ import {Address} from "@openzeppelin/contracts/utils/Address.sol";
  * @notice Dollar Cost Averaging (DCA) protocol for automated token swaps
  * @dev Custodial protocol that holds user funds and executes DCA orders
  */
-contract HydrexDCA is AccessControl, ReentrancyGuard {
+contract HydrexDCA is AccessControlUpgradeable, ReentrancyGuardUpgradeable {
     using SafeERC20 for IERC20;
     using Address for address;
 
     /// @notice Role identifier for authorized operators
     bytes32 public constant OPERATOR_ROLE = keccak256("OPERATOR_ROLE");
+
+    /// @notice ETH address constant
+    address public constant ETH_ADDRESS = 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE;
+
+    /// @notice Maximum interval between swaps (365 days)
+    uint256 public constant MAX_INTERVAL = 365 days;
+
+    /// @notice Maximum batch size for swap execution
+    uint256 public constant MAX_BATCH_SIZE = 50;
 
     /// @notice Mapping of whitelisted swap routers
     mapping(address => bool) public whitelistedRouters;
@@ -42,10 +51,10 @@ contract HydrexDCA is AccessControl, ReentrancyGuard {
     mapping(address => uint256[]) public userOrders;
 
     /// @notice Minimum interval between swaps (default 1 minute)
-    uint256 public minimumInterval = 1 minutes;
+    uint256 public minimumInterval;
 
     /// @notice Protocol fee in basis points (default 50 = 0.5%)
-    uint256 public protocolFeeBps = 50;
+    uint256 public protocolFeeBps;
 
     /// @notice Fee recipient address
     address public feeRecipient;
@@ -54,7 +63,10 @@ contract HydrexDCA is AccessControl, ReentrancyGuard {
     uint256 public constant MAX_FEE_BPS = 1000;
 
     /// @notice Maximum number of swaps per order (default 100)
-    uint256 public maxSwaps = 100;
+    uint256 public maxSwaps;
+
+    /// @notice Minimum swap amount (default 0.001 tokens)
+    uint256 public minimumSwapAmount;
 
     /*
      * Structs
@@ -167,9 +179,19 @@ contract HydrexDCA is AccessControl, ReentrancyGuard {
     error IntervalTooShort();
     error FeeTooHigh();
     error InvalidFeeRecipient();
+    error FeeOnTransferNotSupported();
 
     /*
      * Constructor
+     */
+
+    /// @custom:oz-upgrades-unsafe-allow constructor
+    constructor() {
+        _disableInitializers();
+    }
+
+    /*
+     * Initializer
      */
 
     /**
@@ -178,13 +200,22 @@ contract HydrexDCA is AccessControl, ReentrancyGuard {
      * @param _operator Address granted `OPERATOR_ROLE`
      * @param _feeRecipient Address to receive protocol fees
      */
-    constructor(address _admin, address _operator, address _feeRecipient) {
+    function initialize(address _admin, address _operator, address _feeRecipient) public initializer {
         if (_admin == address(0) || _operator == address(0)) revert InvalidAddress();
         if (_feeRecipient == address(0)) revert InvalidFeeRecipient();
+
+        __AccessControl_init();
+        __ReentrancyGuard_init();
 
         _grantRole(DEFAULT_ADMIN_ROLE, _admin);
         _grantRole(OPERATOR_ROLE, _operator);
         feeRecipient = _feeRecipient;
+        
+        // Initialize default values
+        minimumInterval = 1 minutes;
+        protocolFeeBps = 50;
+        maxSwaps = 100;
+        minimumSwapAmount = 1e15; // 0.001 tokens
     }
 
     /*
@@ -210,8 +241,9 @@ contract HydrexDCA is AccessControl, ReentrancyGuard {
     ) external payable nonReentrant returns (uint256 orderId) {
         if (tokenOut == address(0)) revert InvalidAddress();
         if (numberOfSwaps < 2 || numberOfSwaps > maxSwaps) revert InvalidAmounts();
+        if (interval > MAX_INTERVAL) revert InvalidOrderParameters();
 
-        bool isETH = tokenIn == 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE;
+        bool isETH = tokenIn == ETH_ADDRESS;
 
         if (isETH) {
             // Native ETH order
@@ -223,15 +255,19 @@ contract HydrexDCA is AccessControl, ReentrancyGuard {
             if (tokenIn == address(0)) revert InvalidOrderParameters();
             if (totalAmount == 0) revert InvalidAmounts();
             if (msg.value > 0) revert InvalidOrderParameters();
+            
+            // Validate integer division has no remainder
+            if (totalAmount % numberOfSwaps != 0) revert InvalidAmounts();
 
             // Measure actual amount received and validate it matches expected
+            // Fee-on-transfer tokens are not supported
             uint256 balanceBefore = IERC20(tokenIn).balanceOf(address(this));
             IERC20(tokenIn).safeTransferFrom(msg.sender, address(this), totalAmount);
             uint256 balanceAfter = IERC20(tokenIn).balanceOf(address(this));
             uint256 actualReceived = balanceAfter - balanceBefore;
 
-            // Validate we received exactly what was expected
-            if (actualReceived != totalAmount) revert InvalidAmounts();
+            // Validate we received exactly what was expected (rejects fee-on-transfer tokens)
+            if (actualReceived != totalAmount) revert FeeOnTransferNotSupported();
         }
 
         // Create order
@@ -271,6 +307,8 @@ contract HydrexDCA is AccessControl, ReentrancyGuard {
      * @param swaps Array of swap data to execute
      */
     function batchSwap(SwapData[] calldata swaps) external onlyRole(OPERATOR_ROLE) nonReentrant {
+        if (swaps.length > MAX_BATCH_SIZE) revert InvalidAmounts();
+        
         for (uint256 i = 0; i < swaps.length; i++) {
             _executeSwap(swaps[i]);
         }
@@ -297,6 +335,9 @@ contract HydrexDCA is AccessControl, ReentrancyGuard {
 
         // Calculate amount per swap
         uint256 amountPerSwap = totalAmount / numberOfSwaps;
+        
+        // Validate amount per swap meets minimum
+        if (amountPerSwap < minimumSwapAmount) revert InvalidAmounts();
 
         orderId = orderCounter++;
 
@@ -357,8 +398,17 @@ contract HydrexDCA is AccessControl, ReentrancyGuard {
             return;
         }
 
+        // Enforce amountPerSwap unless this is the final swap
+        if (swap.amountIn != order.amountPerSwap) {
+            // Only allow if this is the final swap with remaining amount less than amountPerSwap
+            if (order.remainingAmount >= order.amountPerSwap || swap.amountIn != order.remainingAmount) {
+                emit DCASwapFailed(swap.orderId, order.user, "Must use amountPerSwap or final remaining amount");
+                return;
+            }
+        }
+
         // Handle ETH or ERC20 input
-        bool isETH = order.tokenIn == 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE;
+        bool isETH = order.tokenIn == ETH_ADDRESS;
 
         if (!isETH) {
             // Approve swap router
@@ -440,7 +490,7 @@ contract HydrexDCA is AccessControl, ReentrancyGuard {
      * @return Balance of the token
      */
     function _getBalance(address token) internal view returns (uint256) {
-        if (token == address(0) || token == 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE) {
+        if (token == address(0) || token == ETH_ADDRESS) {
             return address(this).balance;
         }
         return IERC20(token).balanceOf(address(this));
@@ -455,7 +505,7 @@ contract HydrexDCA is AccessControl, ReentrancyGuard {
     function _transfer(address token, address to, uint256 amount) internal {
         if (amount == 0) return;
 
-        if (token == address(0) || token == 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE) {
+        if (token == address(0) || token == ETH_ADDRESS) {
             (bool success, ) = payable(to).call{value: amount}("");
             require(success, "ETH transfer failed");
         } else {
@@ -526,6 +576,8 @@ contract HydrexDCA is AccessControl, ReentrancyGuard {
         uint256 offset,
         uint256 limit
     ) external view returns (Order[] memory userOrdersData, uint256 total) {
+        if (limit > 100) revert InvalidAmounts();
+        
         uint256[] storage allOrderIds = userOrders[user];
         total = allOrderIds.length;
 
@@ -615,4 +667,11 @@ contract HydrexDCA is AccessControl, ReentrancyGuard {
      * @notice Allow the contract to receive ETH
      */
     receive() external payable {}
+
+    /**
+     * @dev This empty reserved space is put in place to allow future versions to add new
+     * variables without shifting down storage in the inheritance chain.
+     * See https://docs.openzeppelin.com/contracts/4.x/upgradeable#storage_gaps
+     */
+    uint256[50] private __gap;
 }

@@ -3,6 +3,7 @@ pragma solidity 0.8.26;
 
 import "forge-std/Test.sol";
 import {HydrexDCA} from "../contracts/dca/HydrexDCA.sol";
+import {HydrexDCAProxy} from "../contracts/dca/HydrexDCAProxy.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 
@@ -60,8 +61,27 @@ contract HydrexDCATest is Test {
     address public feeRecipient = address(0x4);
 
     function setUp() public {
-        // Deploy contracts
-        dca = new HydrexDCA(admin, operator, feeRecipient);
+        // Deploy implementation
+        HydrexDCA implementation = new HydrexDCA();
+        
+        // Prepare initialization data
+        bytes memory initData = abi.encodeWithSelector(
+            HydrexDCA.initialize.selector,
+            admin,
+            operator,
+            feeRecipient
+        );
+        
+        // Deploy proxy
+        HydrexDCAProxy proxy = new HydrexDCAProxy(
+            address(implementation),
+            admin,
+            initData
+        );
+        
+        // Get proxied instance
+        dca = HydrexDCA(payable(address(proxy)));
+        
         tokenIn = new ERC20Mock();
         tokenOut = new ERC20Mock();
         router = new MockRouter();
