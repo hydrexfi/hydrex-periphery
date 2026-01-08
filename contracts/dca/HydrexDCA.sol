@@ -179,6 +179,7 @@ contract HydrexDCA is AccessControlUpgradeable, ReentrancyGuardUpgradeable {
     error IntervalTooShort();
     error FeeTooHigh();
     error InvalidFeeRecipient();
+    error FeeOnTransferNotSupported();
 
     /*
      * Constructor
@@ -259,13 +260,14 @@ contract HydrexDCA is AccessControlUpgradeable, ReentrancyGuardUpgradeable {
             if (totalAmount % numberOfSwaps != 0) revert InvalidAmounts();
 
             // Measure actual amount received and validate it matches expected
+            // Fee-on-transfer tokens are not supported
             uint256 balanceBefore = IERC20(tokenIn).balanceOf(address(this));
             IERC20(tokenIn).safeTransferFrom(msg.sender, address(this), totalAmount);
             uint256 balanceAfter = IERC20(tokenIn).balanceOf(address(this));
             uint256 actualReceived = balanceAfter - balanceBefore;
 
-            // Validate we received exactly what was expected
-            if (actualReceived != totalAmount) revert InvalidAmounts();
+            // Validate we received exactly what was expected (rejects fee-on-transfer tokens)
+            if (actualReceived != totalAmount) revert FeeOnTransferNotSupported();
         }
 
         // Create order
@@ -394,6 +396,15 @@ contract HydrexDCA is AccessControlUpgradeable, ReentrancyGuardUpgradeable {
         if (swap.amountIn == 0 || swap.amountIn > order.remainingAmount) {
             emit DCASwapFailed(swap.orderId, order.user, "Invalid amount");
             return;
+        }
+
+        // Enforce amountPerSwap unless this is the final swap
+        if (swap.amountIn != order.amountPerSwap) {
+            // Only allow if this is the final swap with remaining amount less than amountPerSwap
+            if (order.remainingAmount >= order.amountPerSwap || swap.amountIn != order.remainingAmount) {
+                emit DCASwapFailed(swap.orderId, order.user, "Must use amountPerSwap or final remaining amount");
+                return;
+            }
         }
 
         // Handle ETH or ERC20 input
