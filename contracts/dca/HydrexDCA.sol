@@ -29,6 +29,15 @@ contract HydrexDCA is AccessControlUpgradeable, ReentrancyGuardUpgradeable {
     /// @notice Role identifier for authorized operators
     bytes32 public constant OPERATOR_ROLE = keccak256("OPERATOR_ROLE");
 
+    /// @notice ETH address constant
+    address public constant ETH_ADDRESS = 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE;
+
+    /// @notice Maximum interval between swaps (365 days)
+    uint256 public constant MAX_INTERVAL = 365 days;
+
+    /// @notice Maximum batch size for swap execution
+    uint256 public constant MAX_BATCH_SIZE = 50;
+
     /// @notice Mapping of whitelisted swap routers
     mapping(address => bool) public whitelistedRouters;
 
@@ -55,6 +64,9 @@ contract HydrexDCA is AccessControlUpgradeable, ReentrancyGuardUpgradeable {
 
     /// @notice Maximum number of swaps per order (default 100)
     uint256 public maxSwaps;
+
+    /// @notice Minimum swap amount (default 0.001 tokens)
+    uint256 public minimumSwapAmount;
 
     /*
      * Structs
@@ -202,6 +214,7 @@ contract HydrexDCA is AccessControlUpgradeable, ReentrancyGuardUpgradeable {
         minimumInterval = 1 minutes;
         protocolFeeBps = 50;
         maxSwaps = 100;
+        minimumSwapAmount = 1e15; // 0.001 tokens
     }
 
     /*
@@ -227,8 +240,9 @@ contract HydrexDCA is AccessControlUpgradeable, ReentrancyGuardUpgradeable {
     ) external payable nonReentrant returns (uint256 orderId) {
         if (tokenOut == address(0)) revert InvalidAddress();
         if (numberOfSwaps < 2 || numberOfSwaps > maxSwaps) revert InvalidAmounts();
+        if (interval > MAX_INTERVAL) revert InvalidOrderParameters();
 
-        bool isETH = tokenIn == 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE;
+        bool isETH = tokenIn == ETH_ADDRESS;
 
         if (isETH) {
             // Native ETH order
@@ -240,6 +254,9 @@ contract HydrexDCA is AccessControlUpgradeable, ReentrancyGuardUpgradeable {
             if (tokenIn == address(0)) revert InvalidOrderParameters();
             if (totalAmount == 0) revert InvalidAmounts();
             if (msg.value > 0) revert InvalidOrderParameters();
+            
+            // Validate integer division has no remainder
+            if (totalAmount % numberOfSwaps != 0) revert InvalidAmounts();
 
             // Measure actual amount received and validate it matches expected
             uint256 balanceBefore = IERC20(tokenIn).balanceOf(address(this));
@@ -288,6 +305,8 @@ contract HydrexDCA is AccessControlUpgradeable, ReentrancyGuardUpgradeable {
      * @param swaps Array of swap data to execute
      */
     function batchSwap(SwapData[] calldata swaps) external onlyRole(OPERATOR_ROLE) nonReentrant {
+        if (swaps.length > MAX_BATCH_SIZE) revert InvalidAmounts();
+        
         for (uint256 i = 0; i < swaps.length; i++) {
             _executeSwap(swaps[i]);
         }
@@ -314,6 +333,9 @@ contract HydrexDCA is AccessControlUpgradeable, ReentrancyGuardUpgradeable {
 
         // Calculate amount per swap
         uint256 amountPerSwap = totalAmount / numberOfSwaps;
+        
+        // Validate amount per swap meets minimum
+        if (amountPerSwap < minimumSwapAmount) revert InvalidAmounts();
 
         orderId = orderCounter++;
 
@@ -375,7 +397,7 @@ contract HydrexDCA is AccessControlUpgradeable, ReentrancyGuardUpgradeable {
         }
 
         // Handle ETH or ERC20 input
-        bool isETH = order.tokenIn == 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE;
+        bool isETH = order.tokenIn == ETH_ADDRESS;
 
         if (!isETH) {
             // Approve swap router
@@ -457,7 +479,7 @@ contract HydrexDCA is AccessControlUpgradeable, ReentrancyGuardUpgradeable {
      * @return Balance of the token
      */
     function _getBalance(address token) internal view returns (uint256) {
-        if (token == address(0) || token == 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE) {
+        if (token == address(0) || token == ETH_ADDRESS) {
             return address(this).balance;
         }
         return IERC20(token).balanceOf(address(this));
@@ -472,7 +494,7 @@ contract HydrexDCA is AccessControlUpgradeable, ReentrancyGuardUpgradeable {
     function _transfer(address token, address to, uint256 amount) internal {
         if (amount == 0) return;
 
-        if (token == address(0) || token == 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE) {
+        if (token == address(0) || token == ETH_ADDRESS) {
             (bool success, ) = payable(to).call{value: amount}("");
             require(success, "ETH transfer failed");
         } else {
@@ -543,6 +565,8 @@ contract HydrexDCA is AccessControlUpgradeable, ReentrancyGuardUpgradeable {
         uint256 offset,
         uint256 limit
     ) external view returns (Order[] memory userOrdersData, uint256 total) {
+        if (limit > 100) revert InvalidAmounts();
+        
         uint256[] storage allOrderIds = userOrders[user];
         total = allOrderIds.length;
 
