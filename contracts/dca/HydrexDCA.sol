@@ -268,9 +268,6 @@ contract HydrexDCA is AccessControlUpgradeable, ReentrancyGuardUpgradeable {
             if (totalAmount == 0) revert InvalidAmounts();
             if (msg.value > 0) revert InvalidOrderParameters();
 
-            // Validate integer division has no remainder
-            if (totalAmount % numberOfSwaps != 0) revert InvalidAmounts();
-
             // Measure actual amount received and validate it matches expected
             // Fee-on-transfer tokens are not supported
             uint256 balanceBefore = IERC20(tokenIn).balanceOf(address(this));
