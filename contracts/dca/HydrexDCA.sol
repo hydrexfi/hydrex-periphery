@@ -118,7 +118,6 @@ contract HydrexDCA is AccessControlUpgradeable, ReentrancyGuardUpgradeable {
         uint256 amountIn;
         address router;
         bytes routerCalldata;
-        address feeRecipient;
     }
 
     /*
@@ -179,17 +178,11 @@ contract HydrexDCA is AccessControlUpgradeable, ReentrancyGuardUpgradeable {
      * Errors
      */
 
-    error RouterNotWhitelisted();
     error InvalidAmounts();
-    error InsufficientBalance();
-    error InsufficientAllowance();
-    error SwapFailed();
-    error InsufficientReturnAmount();
     error InvalidAddress();
     error OrderNotFound();
     error OrderNotActive();
     error UnauthorizedCancellation();
-    error IntervalNotMet();
     error InvalidOrderParameters();
     error IntervalTooShort();
     error FeeTooHigh();
@@ -462,6 +455,12 @@ contract HydrexDCA is AccessControlUpgradeable, ReentrancyGuardUpgradeable {
         // Calculate actual return amount
         uint256 balanceAfter = _getBalance(order.tokenOut);
         uint256 returnAmount = balanceAfter - balanceBefore;
+
+        // Validate minimum output
+        if (returnAmount == 0) {
+            emit DCASwapFailed(swap.orderId, order.user, "Zero output amount");
+            return;
+        }
 
         // Update order state
         order.remainingAmount -= swap.amountIn;
