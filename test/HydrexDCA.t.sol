@@ -300,8 +300,7 @@ contract HydrexDCATest is Test {
             orderId: orderId,
             amountIn: amountPerSwap,
             router: address(router),
-            routerCalldata: swapCalldata,
-            feeRecipient: feeRecipient
+            routerCalldata: swapCalldata
         });
 
         // Execute swap
@@ -357,8 +356,7 @@ contract HydrexDCATest is Test {
             orderId: orderId,
             amountIn: amountPerSwap,
             router: address(router),
-            routerCalldata: swapCalldata,
-            feeRecipient: feeRecipient
+            routerCalldata: swapCalldata
         });
 
         vm.prank(operator);
@@ -401,8 +399,7 @@ contract HydrexDCATest is Test {
             orderId: orderId,
             amountIn: amountPerSwap,
             router: address(router),
-            routerCalldata: swapCalldata,
-            feeRecipient: feeRecipient
+            routerCalldata: swapCalldata
         });
 
         // Execute first swap
@@ -450,8 +447,7 @@ contract HydrexDCATest is Test {
             orderId: orderId,
             amountIn: 10 ether,
             router: address(router),
-            routerCalldata: swapCalldata,
-            feeRecipient: feeRecipient
+            routerCalldata: swapCalldata
         });
 
         // First swap succeeds
@@ -497,8 +493,7 @@ contract HydrexDCATest is Test {
             orderId: orderId,
             amountIn: 10 ether,
             router: address(router),
-            routerCalldata: swapCalldata,
-            feeRecipient: feeRecipient
+            routerCalldata: swapCalldata
         });
 
         // Swap fails but doesn't revert
@@ -585,8 +580,7 @@ contract HydrexDCATest is Test {
             orderId: orderId,
             amountIn: 10 ether,
             router: address(router),
-            routerCalldata: swapCalldata,
-            feeRecipient: feeRecipient
+            routerCalldata: swapCalldata
         });
 
         vm.prank(operator);
