@@ -16,6 +16,7 @@ contract DeployHydrexDCA is Script {
         address deployer = vm.addr(deployerKey);
 
         string memory networkName = vm.envOr("NETWORK", string("base"));
+        address feeRecipient = vm.envAddress("FEE_RECIPIENT");
         address admin = vm.envAddress("ADMIN");
 
         address[] memory routers = new address[](1);
@@ -25,8 +26,8 @@ contract DeployHydrexDCA is Script {
         console2.log("Network:", networkName);
         console2.log("Deployer:", deployer);
         console2.log("Admin:", admin);
-        console2.log("Operator:", admin);
-        console2.log("Fee Recipient:", admin);
+        console2.log("Operator:", deployer);
+        console2.log("Fee Recipient:", feeRecipient);
         console2.log("\n=== Starting Deployment ===");
 
         vm.startBroadcast(deployerKey);
@@ -36,19 +37,10 @@ contract DeployHydrexDCA is Script {
         console2.log("Implementation deployed at:", address(implementation));
 
         // Prepare initialization data
-        bytes memory initData = abi.encodeWithSelector(
-            HydrexDCA.initialize.selector,
-            admin,
-            admin,
-            admin
-        );
+        bytes memory initData = abi.encodeWithSelector(HydrexDCA.initialize.selector, deployer, deployer, feeRecipient);
 
         // Deploy proxy
-        HydrexDCAProxy proxy = new HydrexDCAProxy(
-            address(implementation),
-            admin,
-            initData
-        );
+        HydrexDCAProxy proxy = new HydrexDCAProxy(address(implementation), admin, initData);
         console2.log("Proxy deployed at:", address(proxy));
 
         // Get proxied instance
@@ -63,14 +55,14 @@ contract DeployHydrexDCA is Script {
         console2.log("Proxy Address:", address(proxy));
         console2.log("Implementation Address:", address(implementation));
         console2.log("Admin address:", admin);
-        console2.log("Operator address:", admin);
+        console2.log("Operator address:", deployer);
         console2.log("Fee Recipient:", dca.feeRecipient());
         console2.log("Protocol Fee (bps):", dca.protocolFeeBps());
         console2.log("Minimum interval (seconds):", dca.minimumInterval());
         console2.log("Routers whitelisted:", routers.length);
         console2.log("  - KyberSwap:", routers[0]);
 
-        _saveDeployment(networkName, address(proxy), address(implementation), admin, admin);
+        _saveDeployment(networkName, address(proxy), address(implementation), admin, deployer);
     }
 
     function _saveDeployment(
