@@ -149,7 +149,7 @@ contract VeMaxiTokenConduit is AccessControlUpgradeable {
         require(owner != address(0), "Invalid token owner");
 
         // Execute protocol lock (options exercise)
-        (uint256 exercisedNftId, uint256 optionsClaimedAmount) = _executeProtocolLock(
+        (, uint256 optionsClaimedAmount, uint256 protocolLockedAmount) = _executeProtocolLock(
             tokenId,
             feeAddresses,
             bribeAddresses,
@@ -158,7 +158,7 @@ contract VeMaxiTokenConduit is AccessControlUpgradeable {
         );
 
         // Execute flex lock (swap and lock)
-        (uint256 swapCreatedNftId, uint256[] memory swapClaimedAmounts) = _executeFlexLock(
+        uint256 flexLockedAmount = _executeFlexLock(
             tokenId,
             targets,
             swaps,
@@ -169,16 +169,41 @@ contract VeMaxiTokenConduit is AccessControlUpgradeable {
             flexLockMergeIntoId
         );
 
-        // Emit event
-        _emitCombinedEvent(
-            tokenId,
-            owner,
-            exercisedNftId,
-            swapCreatedNftId,
-            optionsClaimedAmount,
-            swapClaimTokens,
-            swapClaimedAmounts
-        );
+        // Emit event - simplified version with just tokens claimed, no individual amounts
+        {
+            address[] memory allClaimedTokens = new address[](swapClaimTokens.length + 1);
+            uint256[] memory allClaimedAmounts = new uint256[](swapClaimTokens.length + 1);
+
+            allClaimedTokens[0] = optionsToken;
+            allClaimedAmounts[0] = optionsClaimedAmount;
+
+            for (uint256 i = 0; i < swapClaimTokens.length; i++) {
+                allClaimedTokens[i + 1] = swapClaimTokens[i];
+                // Set to 0 to avoid recalculating - event mainly for token tracking
+                allClaimedAmounts[i + 1] = 0;
+            }
+
+            address[] memory distributedTokens = new address[](2);
+            distributedTokens[0] = optionsToken;
+            distributedTokens[1] = hydxToken;
+
+            uint256[] memory distributedAmounts = new uint256[](2);
+            distributedAmounts[0] = protocolLockedAmount;
+            distributedAmounts[1] = flexLockedAmount;
+
+            uint256[] memory treasuryFees = new uint256[](2);
+
+            emit ClaimSwapAndDistributeCompleted(
+                tokenId,
+                owner,
+                owner,
+                allClaimedTokens,
+                allClaimedAmounts,
+                distributedTokens,
+                distributedAmounts,
+                treasuryFees
+            );
+        }
     }
 
     /*
@@ -192,7 +217,7 @@ contract VeMaxiTokenConduit is AccessControlUpgradeable {
         address[] calldata bribeAddresses,
         address owner,
         uint256 protocolLockMergeIntoId
-    ) internal returns (uint256 exercisedNftId, uint256 optionsClaimedAmount) {
+    ) internal returns (uint256 exercisedNftId, uint256 optionsClaimedAmount, uint256 protocolLockedAmount) {
         uint256 optionsBalanceBefore = IERC20(optionsToken).balanceOf(address(this));
 
         address[] memory optionsClaimTokens = new address[](1);
@@ -214,7 +239,8 @@ contract VeMaxiTokenConduit is AccessControlUpgradeable {
             }
 
             // Track the amount of oHYDX exercised (not HYDX, as exerciseVe creates locked veNFT directly)
-            totalProtocolLocked[owner] += optionsClaimedAmount;
+            protocolLockedAmount = optionsClaimedAmount;
+            totalProtocolLocked[owner] += protocolLockedAmount;
         }
     }
 
@@ -228,9 +254,9 @@ contract VeMaxiTokenConduit is AccessControlUpgradeable {
         address[] calldata swapClaimTokens,
         address owner,
         uint256 flexLockMergeIntoId
-    ) internal returns (uint256 swapCreatedNftId, uint256[] memory swapClaimedAmounts) {
+    ) internal returns (uint256 flexLockedAmount) {
         if (swapClaimTokens.length == 0) {
-            return (0, new uint256[](0));
+            return 0;
         }
 
         // Validate swap claim tokens
@@ -239,24 +265,14 @@ contract VeMaxiTokenConduit is AccessControlUpgradeable {
             require(swapClaimTokens[i] != optionsToken, "Cannot swap options token");
         }
 
-        uint256[] memory swapBalancesBefore = new uint256[](swapClaimTokens.length);
-        for (uint256 i = 0; i < swapClaimTokens.length; i++) {
-            swapBalancesBefore[i] = IERC20(swapClaimTokens[i]).balanceOf(address(this));
-        }
-
         _claimBribesAndFees(tokenId, feeAddresses, bribeAddresses, swapClaimTokens);
-
-        swapClaimedAmounts = new uint256[](swapClaimTokens.length);
-        for (uint256 i = 0; i < swapClaimTokens.length; i++) {
-            swapClaimedAmounts[i] = IERC20(swapClaimTokens[i]).balanceOf(address(this)) - swapBalancesBefore[i];
-        }
 
         uint256 hydxBefore = IERC20(hydxToken).balanceOf(address(this));
         _runSwaps(targets, swaps, swapClaimTokens);
         uint256 hydxAcquired = IERC20(hydxToken).balanceOf(address(this)) - hydxBefore;
 
         if (hydxAcquired > 0) {
-            swapCreatedNftId = _createRollingLock(hydxAcquired, address(this));
+            uint256 swapCreatedNftId = _createRollingLock(hydxAcquired, address(this));
 
             if (swapCreatedNftId != 0) {
                 IERC721(veToken).safeTransferFrom(address(this), owner, swapCreatedNftId);
@@ -266,52 +282,9 @@ contract VeMaxiTokenConduit is AccessControlUpgradeable {
                 }
             }
 
-            totalFlexLocked[owner] += hydxAcquired;
+            flexLockedAmount = hydxAcquired;
+            totalFlexLocked[owner] += flexLockedAmount;
         }
-    }
-
-    /// @dev Emit combined event with all claimed tokens and amounts
-    function _emitCombinedEvent(
-        uint256 tokenId,
-        address owner,
-        uint256 exercisedNftId,
-        uint256 swapCreatedNftId,
-        uint256 optionsClaimedAmount,
-        address[] calldata swapClaimTokens,
-        uint256[] memory swapClaimedAmounts
-    ) internal {
-        address[] memory allClaimedTokens = new address[](swapClaimTokens.length + 1);
-        uint256[] memory allClaimedAmounts = new uint256[](swapClaimTokens.length + 1);
-
-        allClaimedTokens[0] = optionsToken;
-        allClaimedAmounts[0] = optionsClaimedAmount;
-
-        for (uint256 i = 0; i < swapClaimTokens.length; i++) {
-            allClaimedTokens[i + 1] = swapClaimTokens[i];
-            allClaimedAmounts[i + 1] = swapClaimedAmounts[i];
-        }
-
-        address[] memory distributedTokens = new address[](1);
-        distributedTokens[0] = veToken;
-        uint256[] memory distributedAmounts = new uint256[](1);
-        uint256 nftCount = 0;
-        if (exercisedNftId != 0) nftCount++;
-        if (swapCreatedNftId != 0) nftCount++;
-        distributedAmounts[0] = nftCount;
-
-        uint256[] memory treasuryFees = new uint256[](1);
-        treasuryFees[0] = 0;
-
-        emit ClaimSwapAndDistributeCompleted(
-            tokenId,
-            owner,
-            owner,
-            allClaimedTokens,
-            allClaimedAmounts,
-            distributedTokens,
-            distributedAmounts,
-            treasuryFees
-        );
     }
 
     /// @dev Step 1: Claim bribes and fees for a tokenId to this contract
