@@ -11,7 +11,7 @@ pragma solidity 0.8.26;
 
 */
 
-import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
+import {AccessControlUpgradeable} from "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 import {IVoter} from "../interfaces/IVoter.sol";
@@ -22,27 +22,37 @@ import {IOptionsToken} from "../interfaces/IOptionsToken.sol";
  * @title VeMaxiTokenConduit
  * @notice Conduit that claims rewards, swaps to HYDX, and creates ROLLING veNFT locks
  */
-contract VeMaxiTokenConduit is AccessControl {
+contract VeMaxiTokenConduit is AccessControlUpgradeable {
     /// @notice Role identifier for authorized executors
     bytes32 public constant EXECUTOR_ROLE = keccak256("EXECUTOR_ROLE");
 
     /// @notice ve(3,3) voter contract
-    address public immutable voter;
+    address public voter;
 
     /// @notice veNFT contract whose tokenId ownership dictates distribution recipient
-    address public immutable veToken;
+    address public veToken;
 
     /// @notice HYDX token address (the token we buy back and lock)
-    address public immutable hydxToken;
+    address public hydxToken;
 
     /// @notice oHYDX options token address
-    address public immutable optionsToken;
+    address public optionsToken;
+
+    /*
+     * State Variables
+     */
+
+    /// @notice Total HYDX locked per user address (from swaps)
+    mapping(address => uint256) public totalFlexLocked;
+
+    /// @notice Total HYDX locked per user address (from options exercise)
+    mapping(address => uint256) public totalProtocolLocked;
 
     /*
      * Events
      */
 
-    /// @notice Emitted upon completion of claimSwapAndLock operation (for indexer compatibility)
+    /// @notice Emitted upon completion of claim operations (for indexer compatibility)
     event ClaimSwapAndDistributeCompleted(
         uint256 indexed tokenId,
         address indexed owner,
@@ -54,18 +64,14 @@ contract VeMaxiTokenConduit is AccessControl {
         uint256[] treasuryFees
     );
 
-    /// @notice Emitted upon completion of claimExerciseAndLock operation
-    event ClaimExerciseAndLockCompleted(
-        uint256 indexed tokenId,
-        address indexed owner,
-        uint256 optionsClaimedAmount,
-        uint256 mintedNftId,
-        uint256 mergeToTokenId
-    );
-
     /*
-     * Constructor
+     * Constructor & Initializer
      */
+
+    /// @custom:oz-upgrades-unsafe-allow constructor
+    constructor() {
+        _disableInitializers();
+    }
 
     /**
      * @notice Initialize the conduit
@@ -75,11 +81,19 @@ contract VeMaxiTokenConduit is AccessControl {
      * @param _hydxToken HYDX token address
      * @param _optionsToken oHYDX options token address
      */
-    constructor(address defaultAdmin, address _voter, address _veToken, address _hydxToken, address _optionsToken) {
+    function initialize(
+        address defaultAdmin,
+        address _voter,
+        address _veToken,
+        address _hydxToken,
+        address _optionsToken
+    ) external initializer {
         require(_voter != address(0), "Invalid voter address");
         require(_veToken != address(0), "Invalid veToken address");
         require(_hydxToken != address(0), "Invalid HYDX token address");
         require(_optionsToken != address(0), "Invalid options token address");
+
+        __AccessControl_init();
 
         _grantRole(DEFAULT_ADMIN_ROLE, defaultAdmin);
         _grantRole(EXECUTOR_ROLE, msg.sender);
@@ -101,79 +115,6 @@ contract VeMaxiTokenConduit is AccessControl {
      */
 
     /**
-     * @notice Claim rewards (fees + bribes), swap to HYDX, and create a ROLLING veNFT lock
-     * @param tokenId veNFT id to act on. Lock recipient is `IERC721(veToken).ownerOf(tokenId)`
-     * @param targets Swap targets (routers)
-     * @param swaps Encoded calldata per target
-     * @param feeAddresses Fee contracts to claim from
-     * @param bribeAddresses Bribe contracts to claim from
-     * @param claimTokens Tokens to claim from fee/bribe contracts
-     * @param mergeToTokenId Optional tokenId to merge the newly created lock into (0 to skip merge)
-     */
-    function claimSwapAndLock(
-        uint256 tokenId,
-        address[] calldata targets,
-        bytes[] calldata swaps,
-        address[] calldata feeAddresses,
-        address[] calldata bribeAddresses,
-        address[] calldata claimTokens,
-        uint256 mergeToTokenId
-    ) external onlyRole(EXECUTOR_ROLE) {
-        address owner = IERC721(veToken).ownerOf(tokenId);
-        require(owner != address(0), "Invalid token owner");
-
-        _assertNoDuplicateAddresses(claimTokens);
-
-        uint256[] memory balancesBefore = new uint256[](claimTokens.length);
-        for (uint256 i = 0; i < claimTokens.length; i++) {
-            balancesBefore[i] = IERC20(claimTokens[i]).balanceOf(address(this));
-        }
-
-        _claimBribesAndFees(tokenId, feeAddresses, bribeAddresses, claimTokens);
-
-        uint256[] memory claimedAmounts = new uint256[](claimTokens.length);
-        for (uint256 i = 0; i < claimTokens.length; i++) {
-            claimedAmounts[i] = IERC20(claimTokens[i]).balanceOf(address(this)) - balancesBefore[i];
-        }
-
-        uint256 hydxBefore = IERC20(hydxToken).balanceOf(address(this));
-        _runSwaps(targets, swaps, claimTokens);
-        uint256 hydxAcquired = IERC20(hydxToken).balanceOf(address(this)) - hydxBefore;
-
-        require(hydxAcquired > 0, "No HYDX acquired");
-
-        uint256 newTokenId = _createRollingLock(hydxAcquired, address(this));
-
-        if (newTokenId != 0) {
-            IERC721(veToken).safeTransferFrom(address(this), owner, newTokenId);
-        }
-
-        if (newTokenId != 0 && mergeToTokenId != 0) {
-            _mergeVeNFTs(owner, newTokenId, mergeToTokenId);
-        }
-
-        // Emit in same format as VeTokenConduit for indexer compatibility
-        // Use veToken address and amount of 1 to indicate veNFT creation (different from token distribution)
-        address[] memory distributedTokens = new address[](1);
-        distributedTokens[0] = veToken;
-        uint256[] memory distributedAmounts = new uint256[](1);
-        distributedAmounts[0] = 1;
-        uint256[] memory treasuryFees = new uint256[](1);
-        treasuryFees[0] = 0;
-
-        emit ClaimSwapAndDistributeCompleted(
-            tokenId,
-            owner,
-            owner,
-            claimTokens,
-            claimedAmounts,
-            distributedTokens,
-            distributedAmounts,
-            treasuryFees
-        );
-    }
-
-    /**
      * @notice Cast votes on the Voter for all veNFTs
      * @param pools Pool addresses to vote for
      * @param weights Weights to apply to each pool (1:1 with `pools`)
@@ -184,52 +125,194 @@ contract VeMaxiTokenConduit is AccessControl {
     }
 
     /**
-     * @notice Claim oHYDX from fees/bribes, exercise to veNFT, and optionally merge
+     * @notice Combined function: claim oHYDX + exercise AND claim tokens + swap, with separate merge targets
      * @param tokenId veNFT id to act on. Lock recipient is `IERC721(veToken).ownerOf(tokenId)`
+     * @param targets Swap targets (routers)
+     * @param swaps Encoded calldata per target
      * @param feeAddresses Fee contracts to claim from
      * @param bribeAddresses Bribe contracts to claim from
-     * @param mergeToTokenId Optional tokenId to merge the newly created veNFT into (0 to skip merge)
+     * @param swapClaimTokens Tokens to claim and swap to HYDX (must NOT include optionsToken)
+     * @param protocolLockMergeIntoId Optional tokenId to merge the exercised options veNFT into (0 to skip)
+     * @param flexLockMergeIntoId Optional tokenId to merge the swapped HYDX veNFT into (0 to skip)
      */
-    function claimExerciseAndLock(
+    function claimExerciseSwapAndLock(
         uint256 tokenId,
+        address[] calldata targets,
+        bytes[] calldata swaps,
         address[] calldata feeAddresses,
         address[] calldata bribeAddresses,
-        uint256 mergeToTokenId
+        address[] calldata swapClaimTokens,
+        uint256 protocolLockMergeIntoId,
+        uint256 flexLockMergeIntoId
     ) external onlyRole(EXECUTOR_ROLE) {
         address owner = IERC721(veToken).ownerOf(tokenId);
         require(owner != address(0), "Invalid token owner");
 
-        // Claim oHYDX from fees/bribes
-        uint256 balanceBefore = IERC20(optionsToken).balanceOf(address(this));
+        // Execute protocol lock (options exercise)
+        (uint256 exercisedNftId, uint256 optionsClaimedAmount) = _executeProtocolLock(
+            tokenId,
+            feeAddresses,
+            bribeAddresses,
+            owner,
+            protocolLockMergeIntoId
+        );
 
-        address[] memory claimTokens = new address[](1);
-        claimTokens[0] = optionsToken;
+        // Execute flex lock (swap and lock)
+        (uint256 swapCreatedNftId, uint256[] memory swapClaimedAmounts) = _executeFlexLock(
+            tokenId,
+            targets,
+            swaps,
+            feeAddresses,
+            bribeAddresses,
+            swapClaimTokens,
+            owner,
+            flexLockMergeIntoId
+        );
 
-        _claimBribesAndFees(tokenId, feeAddresses, bribeAddresses, claimTokens);
-
-        uint256 optionsClaimedAmount = IERC20(optionsToken).balanceOf(address(this)) - balanceBefore;
-
-        // Exercise oHYDX to create veNFT
-        uint256 mintedNftId;
-        if (optionsClaimedAmount > 0) {
-            mintedNftId = IOptionsToken(optionsToken).exerciseVe(optionsClaimedAmount, address(this));
-
-            if (mintedNftId != 0) {
-                IERC721(veToken).safeTransferFrom(address(this), owner, mintedNftId);
-            }
-        }
-
-        // Merge if requested
-        if (mintedNftId != 0 && mergeToTokenId != 0) {
-            _mergeVeNFTs(owner, mintedNftId, mergeToTokenId);
-        }
-
-        emit ClaimExerciseAndLockCompleted(tokenId, owner, optionsClaimedAmount, mintedNftId, mergeToTokenId);
+        // Emit event
+        _emitCombinedEvent(
+            tokenId,
+            owner,
+            exercisedNftId,
+            swapCreatedNftId,
+            optionsClaimedAmount,
+            swapClaimTokens,
+            swapClaimedAmounts
+        );
     }
 
     /*
      * Internal Main Flow Functions
      */
+
+    /// @dev Execute protocol lock: claim and exercise oHYDX
+    function _executeProtocolLock(
+        uint256 tokenId,
+        address[] calldata feeAddresses,
+        address[] calldata bribeAddresses,
+        address owner,
+        uint256 protocolLockMergeIntoId
+    ) internal returns (uint256 exercisedNftId, uint256 optionsClaimedAmount) {
+        uint256 optionsBalanceBefore = IERC20(optionsToken).balanceOf(address(this));
+
+        address[] memory optionsClaimTokens = new address[](1);
+        optionsClaimTokens[0] = optionsToken;
+
+        _claimBribesAndFees(tokenId, feeAddresses, bribeAddresses, optionsClaimTokens);
+
+        optionsClaimedAmount = IERC20(optionsToken).balanceOf(address(this)) - optionsBalanceBefore;
+
+        if (optionsClaimedAmount > 0) {
+            exercisedNftId = IOptionsToken(optionsToken).exerciseVe(optionsClaimedAmount, address(this));
+
+            if (exercisedNftId != 0) {
+                IERC721(veToken).safeTransferFrom(address(this), owner, exercisedNftId);
+
+                if (protocolLockMergeIntoId != 0) {
+                    _mergeVeNFTs(owner, exercisedNftId, protocolLockMergeIntoId);
+                }
+            }
+
+            // Track the amount of oHYDX exercised (not HYDX, as exerciseVe creates locked veNFT directly)
+            totalProtocolLocked[owner] += optionsClaimedAmount;
+        }
+    }
+
+    /// @dev Execute flex lock: claim tokens, swap to HYDX, and create rolling lock
+    function _executeFlexLock(
+        uint256 tokenId,
+        address[] calldata targets,
+        bytes[] calldata swaps,
+        address[] calldata feeAddresses,
+        address[] calldata bribeAddresses,
+        address[] calldata swapClaimTokens,
+        address owner,
+        uint256 flexLockMergeIntoId
+    ) internal returns (uint256 swapCreatedNftId, uint256[] memory swapClaimedAmounts) {
+        if (swapClaimTokens.length == 0) {
+            return (0, new uint256[](0));
+        }
+
+        // Validate swap claim tokens
+        _assertNoDuplicateAddresses(swapClaimTokens);
+        for (uint256 i = 0; i < swapClaimTokens.length; i++) {
+            require(swapClaimTokens[i] != optionsToken, "Cannot swap options token");
+        }
+
+        uint256[] memory swapBalancesBefore = new uint256[](swapClaimTokens.length);
+        for (uint256 i = 0; i < swapClaimTokens.length; i++) {
+            swapBalancesBefore[i] = IERC20(swapClaimTokens[i]).balanceOf(address(this));
+        }
+
+        _claimBribesAndFees(tokenId, feeAddresses, bribeAddresses, swapClaimTokens);
+
+        swapClaimedAmounts = new uint256[](swapClaimTokens.length);
+        for (uint256 i = 0; i < swapClaimTokens.length; i++) {
+            swapClaimedAmounts[i] = IERC20(swapClaimTokens[i]).balanceOf(address(this)) - swapBalancesBefore[i];
+        }
+
+        uint256 hydxBefore = IERC20(hydxToken).balanceOf(address(this));
+        _runSwaps(targets, swaps, swapClaimTokens);
+        uint256 hydxAcquired = IERC20(hydxToken).balanceOf(address(this)) - hydxBefore;
+
+        if (hydxAcquired > 0) {
+            swapCreatedNftId = _createRollingLock(hydxAcquired, address(this));
+
+            if (swapCreatedNftId != 0) {
+                IERC721(veToken).safeTransferFrom(address(this), owner, swapCreatedNftId);
+
+                if (flexLockMergeIntoId != 0) {
+                    _mergeVeNFTs(owner, swapCreatedNftId, flexLockMergeIntoId);
+                }
+            }
+
+            totalFlexLocked[owner] += hydxAcquired;
+        }
+    }
+
+    /// @dev Emit combined event with all claimed tokens and amounts
+    function _emitCombinedEvent(
+        uint256 tokenId,
+        address owner,
+        uint256 exercisedNftId,
+        uint256 swapCreatedNftId,
+        uint256 optionsClaimedAmount,
+        address[] calldata swapClaimTokens,
+        uint256[] memory swapClaimedAmounts
+    ) internal {
+        address[] memory allClaimedTokens = new address[](swapClaimTokens.length + 1);
+        uint256[] memory allClaimedAmounts = new uint256[](swapClaimTokens.length + 1);
+
+        allClaimedTokens[0] = optionsToken;
+        allClaimedAmounts[0] = optionsClaimedAmount;
+
+        for (uint256 i = 0; i < swapClaimTokens.length; i++) {
+            allClaimedTokens[i + 1] = swapClaimTokens[i];
+            allClaimedAmounts[i + 1] = swapClaimedAmounts[i];
+        }
+
+        address[] memory distributedTokens = new address[](1);
+        distributedTokens[0] = veToken;
+        uint256[] memory distributedAmounts = new uint256[](1);
+        uint256 nftCount = 0;
+        if (exercisedNftId != 0) nftCount++;
+        if (swapCreatedNftId != 0) nftCount++;
+        distributedAmounts[0] = nftCount;
+
+        uint256[] memory treasuryFees = new uint256[](1);
+        treasuryFees[0] = 0;
+
+        emit ClaimSwapAndDistributeCompleted(
+            tokenId,
+            owner,
+            owner,
+            allClaimedTokens,
+            allClaimedAmounts,
+            distributedTokens,
+            distributedAmounts,
+            treasuryFees
+        );
+    }
 
     /// @dev Step 1: Claim bribes and fees for a tokenId to this contract
     function _claimBribesAndFees(
