@@ -30,6 +30,9 @@ contract AnchorClubSeason1Snapshot is ILiquidConduit, AccessControl {
     /// @notice Emitted when a batch of snapshots is set
     event BatchSnapshotSet(uint256 count);
 
+      /// @notice Emitted when the contract is initialized
+    event Initialized(address indexed admin);
+
     /// @notice Thrown when array lengths don't match in batch operations
     error InvalidLength();
     
@@ -43,6 +46,7 @@ contract AnchorClubSeason1Snapshot is ILiquidConduit, AccessControl {
     constructor(address _admin) {
         if (_admin == address(0)) revert InvalidAddress();
         _grantRole(DEFAULT_ADMIN_ROLE, _admin);
+        emit Initialized(_admin);
     }
 
     /**
