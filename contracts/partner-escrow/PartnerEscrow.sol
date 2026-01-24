@@ -49,6 +49,25 @@ contract PartnerEscrow is AccessControl, IERC721Receiver {
     event RewardsClaimedAndForwarded(address indexed partner, address[] tokens, uint256[] amounts);
     event ConduitApprovalUpdated(address indexed conduit, bool approved);
     event ConduitApprovalSet(address indexed conduit, uint256 indexed tokenId, bool approved);
+event ERC20Withdrawn(
+    address indexed token,
+    uint256 amount,
+    address indexed to,
+    address indexed caller
+);
+
+event ERC721EmergencyWithdrawn(
+    address indexed token,
+    uint256 indexed tokenId,
+    address indexed to,
+    address caller
+);
+
+event ETHEmergencyWithdrawn(
+    uint256 amount,
+    address indexed to,
+    address indexed caller
+);
 
     /**
      * @notice Constructor sets up roles and configuration
@@ -244,6 +263,7 @@ contract PartnerEscrow is AccessControl, IERC721Receiver {
         require(hasRole(DEFAULT_ADMIN_ROLE, msg.sender) || hasRole(PARTNER_ROLE, msg.sender), "Access denied");
         require(to != address(0), "Invalid recipient");
         IERC20(token).transfer(to, amount);
+        emit ERC20Withdrawn(token, amount, to, msg.sender);
     }
 
     /**
@@ -253,6 +273,7 @@ contract PartnerEscrow is AccessControl, IERC721Receiver {
      */
     function emergencyWithdrawERC721(uint256 _tokenId, address to) external onlyRole(DEFAULT_ADMIN_ROLE) {
         require(to != address(0), "Invalid recipient");
+        emit ERC721EmergencyWithdrawn(veToken, _tokenId, to, msg.sender);
         IERC721(veToken).safeTransferFrom(address(this), to, _tokenId);
     }
 
@@ -264,6 +285,7 @@ contract PartnerEscrow is AccessControl, IERC721Receiver {
     function emergencyWithdrawETH(uint256 amount, address payable to) external onlyRole(DEFAULT_ADMIN_ROLE) {
         require(to != address(0), "Invalid recipient");
         require(address(this).balance >= amount, "Insufficient balance");
+            emit ETHEmergencyWithdrawn(amount, to, msg.sender);
         to.transfer(amount);
     }
 
