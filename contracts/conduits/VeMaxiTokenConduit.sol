@@ -236,6 +236,8 @@ contract VeMaxiTokenConduit is AccessControlUpgradeable {
             swapBalancesBefore[i] = IERC20(swapClaimTokens[i]).balanceOf(address(this));
         }
 
+        uint256 hydxBefore = IERC20(hydxToken).balanceOf(address(this));
+
         _claimBribesAndFees(tokenId, feeAddresses, bribeAddresses, swapClaimTokens);
 
         swapClaimedAmounts = new uint256[](swapClaimTokens.length);
@@ -243,7 +245,6 @@ contract VeMaxiTokenConduit is AccessControlUpgradeable {
             swapClaimedAmounts[i] = IERC20(swapClaimTokens[i]).balanceOf(address(this)) - swapBalancesBefore[i];
         }
 
-        uint256 hydxBefore = IERC20(hydxToken).balanceOf(address(this));
         _runSwaps(targets, swaps, swapClaimTokens);
         hydxAcquired = IERC20(hydxToken).balanceOf(address(this)) - hydxBefore;
 
