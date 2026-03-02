@@ -64,6 +64,8 @@ contract HydrexMultiRouter is AccessControlUpgradeable, ReentrancyGuardUpgradeab
 
     /**
      * @notice Emitted when a swap is successfully executed
+     * @param router Address of the DEX router that executed the swap
+     * @param caller Address that called executeSwaps (msg.sender)
      * @param inputAsset Address of the token sold
      * @param outputAsset Address of the token bought
      * @param inputAmount Amount of inputAsset swapped
@@ -73,12 +75,14 @@ contract HydrexMultiRouter is AccessControlUpgradeable, ReentrancyGuardUpgradeab
      * @param origin String identifier for tracking swap origin
      */
     event SwapExecuted(
+        address indexed router,
         address indexed inputAsset,
-        address indexed outputAsset,
+        address indexed recipient,
+        address caller,
+        address outputAsset,
         uint256 inputAmount,
         uint256 outputAmount,
         uint256 feeAmount,
-        address recipient,
         string origin
     );
 
@@ -216,12 +220,14 @@ contract HydrexMultiRouter is AccessControlUpgradeable, ReentrancyGuardUpgradeab
         _transferAsset(swap.outputAsset, feeRecipient, feeAmount);
 
         emit SwapExecuted(
+            swap.router,
             swap.inputAsset,
+            swap.recipient,
+            msg.sender,
             swap.outputAsset,
             swap.inputAmount,
             recipientAmount,
             feeAmount,
-            swap.recipient,
             swap.origin
         );
     }
