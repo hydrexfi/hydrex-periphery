@@ -29,6 +29,8 @@ contract HydrexMultiRouter is AccessControlUpgradeable, ReentrancyGuardUpgradeab
     address public constant ETH_ADDRESS = 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE;
     /// @notice Maximum allowed protocol fee in basis points (5%)
     uint256 public constant MAX_FEE_BPS = 500;
+    /// @notice Maximum allowed referral fee in basis points (1%)
+    uint256 public constant MAX_REFERRAL_FEE_BPS = 100;
     /// @notice Basis points denominator for fee calculations (10000 = 100%)
     uint256 private constant BPS_DENOMINATOR = 10_000;
 
@@ -46,10 +48,12 @@ contract HydrexMultiRouter is AccessControlUpgradeable, ReentrancyGuardUpgradeab
      * @param inputAsset Address of the token being sold (or ETH_ADDRESS for native ETH)
      * @param outputAsset Address of the token being bought (or ETH_ADDRESS for native ETH)
      * @param inputAmount Amount of inputAsset to swap
-     * @param minOutputAmount Minimum amount of outputAsset to receive (after fees)
+     * @param minOutputAmount Minimum amount of outputAsset to receive (after all fees)
      * @param callData Encoded function call to execute on the router
      * @param recipient Address to receive the output tokens (after fees)
      * @param origin String identifier for tracking swap origin/source
+     * @param referral Optional address to receive the referral fee (address(0) to disable)
+     * @param referralFeeBps Referral fee in basis points, max 100 (1%). Ignored if referral is address(0)
      */
     struct SwapData {
         address router;
@@ -60,6 +64,8 @@ contract HydrexMultiRouter is AccessControlUpgradeable, ReentrancyGuardUpgradeab
         bytes callData;
         address recipient;
         string origin;
+        address referral;
+        uint256 referralFeeBps;
     }
 
     /**
@@ -69,8 +75,10 @@ contract HydrexMultiRouter is AccessControlUpgradeable, ReentrancyGuardUpgradeab
      * @param inputAsset Address of the token sold
      * @param outputAsset Address of the token bought
      * @param inputAmount Amount of inputAsset swapped
-     * @param outputAmount Amount of outputAsset received by recipient (after fees)
+     * @param outputAmount Amount of outputAsset received by recipient (after all fees)
      * @param feeAmount Protocol fee deducted from the swap output
+     * @param referral Address that received the referral fee (address(0) if none)
+     * @param referralFeeAmount Referral fee deducted from the swap output
      * @param recipient Address that received the output tokens
      * @param origin String identifier for tracking swap origin
      */
@@ -83,6 +91,8 @@ contract HydrexMultiRouter is AccessControlUpgradeable, ReentrancyGuardUpgradeab
         uint256 inputAmount,
         uint256 outputAmount,
         uint256 feeAmount,
+        address referral,
+        uint256 referralFeeAmount,
         string origin
     );
 
@@ -105,6 +115,8 @@ contract HydrexMultiRouter is AccessControlUpgradeable, ReentrancyGuardUpgradeab
     error RouterNotWhitelisted();
     /// @notice Thrown when attempting to set a fee higher than MAX_FEE_BPS
     error FeeTooHigh();
+    /// @notice Thrown when a referral fee exceeds MAX_REFERRAL_FEE_BPS (1%)
+    error ReferralFeeTooHigh();
     /// @notice Thrown when a swap call to the DEX router fails
     error SwapFailed();
     /// @notice Thrown when a swap produces zero output tokens
@@ -183,6 +195,9 @@ contract HydrexMultiRouter is AccessControlUpgradeable, ReentrancyGuardUpgradeab
         if (swap.inputAmount == 0) revert InvalidAmount();
         if (!whitelistedRouters[swap.router]) revert RouterNotWhitelisted();
 
+        bool hasReferral = swap.referral != address(0);
+        if (hasReferral && swap.referralFeeBps > MAX_REFERRAL_FEE_BPS) revert ReferralFeeTooHigh();
+
         bool inputIsETH = swap.inputAsset == ETH_ADDRESS;
         bool outputIsETH = swap.outputAsset == ETH_ADDRESS;
 
@@ -210,14 +225,18 @@ contract HydrexMultiRouter is AccessControlUpgradeable, ReentrancyGuardUpgradeab
         uint256 outputAmount = _getBalance(swap.outputAsset) - outputBefore;
         if (outputAmount == 0) revert InsufficientOutput();
 
-        // Deduct protocol fee
+        // Deduct protocol fee and optional referral fee
         uint256 feeAmount = (outputAmount * feeBps) / BPS_DENOMINATOR;
-        uint256 recipientAmount = outputAmount - feeAmount;
+        uint256 referralFeeAmount = hasReferral ? (outputAmount * swap.referralFeeBps) / BPS_DENOMINATOR : 0;
+        uint256 recipientAmount = outputAmount - feeAmount - referralFeeAmount;
         if (recipientAmount < swap.minOutputAmount) revert InsufficientOutput();
 
         // Distribute output
         _transferAsset(swap.outputAsset, swap.recipient, recipientAmount);
         _transferAsset(swap.outputAsset, feeRecipient, feeAmount);
+        if (referralFeeAmount > 0) {
+            _transferAsset(swap.outputAsset, swap.referral, referralFeeAmount);
+        }
 
         emit SwapExecuted(
             swap.router,
@@ -228,6 +247,8 @@ contract HydrexMultiRouter is AccessControlUpgradeable, ReentrancyGuardUpgradeab
             swap.inputAmount,
             recipientAmount,
             feeAmount,
+            swap.referral,
+            referralFeeAmount,
             swap.origin
         );
     }
