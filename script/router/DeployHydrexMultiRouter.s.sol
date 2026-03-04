@@ -8,7 +8,7 @@ import {HydrexMultiRouterProxy} from "../../contracts/router/HydrexMultiRouterPr
 
 /**
  * @title DeployHydrexMultiRouter
- * @dev Script to deploy HydrexMultiRouter (UUPS) on Base mainnet
+ * @dev Script to deploy HydrexMultiRouter (Transparent Proxy) on Base mainnet
  */
 contract DeployHydrexMultiRouter is Script {
     address constant ALGEBRA_ROUTER = 0x6f4bE24d7dC93b6ffcBAb3Fd0747c5817Cea3F9e;
@@ -27,7 +27,7 @@ contract DeployHydrexMultiRouter is Script {
         address admin = vm.envOr("ADMIN", deployer);
         address feeRecipient = vm.envAddress("FEE_RECIPIENT");
 
-        console2.log("=== HydrexMultiRouter Deployment (UUPS) ===");
+        console2.log("=== HydrexMultiRouter Deployment (Transparent Proxy) ===");
         console2.log("Network:", networkName);
         console2.log("Deployer:", deployer);
         console2.log("Admin:", admin);
@@ -40,8 +40,12 @@ contract DeployHydrexMultiRouter is Script {
         console2.log("Implementation deployed at:", address(impl));
 
         bytes memory initData = abi.encodeCall(HydrexMultiRouter.initialize, (admin, feeRecipient));
-        HydrexMultiRouterProxy proxy = new HydrexMultiRouterProxy(address(impl), initData);
+        HydrexMultiRouterProxy proxy = new HydrexMultiRouterProxy(address(impl), admin, initData);
         console2.log("Proxy deployed at:", address(proxy));
+
+        bytes32 adminSlot = bytes32(uint256(keccak256("eip1967.proxy.admin")) - 1);
+        address proxyAdmin = address(uint160(uint256(vm.load(address(proxy), adminSlot))));
+        console2.log("ProxyAdmin deployed at:", proxyAdmin);
 
         HydrexMultiRouter router = HydrexMultiRouter(payable(address(proxy)));
         address[] memory routers = new address[](7);
@@ -58,20 +62,22 @@ contract DeployHydrexMultiRouter is Script {
 
         console2.log("\n=== Deployment Successful ===");
         console2.log("Proxy:", address(proxy));
+        console2.log("ProxyAdmin:", proxyAdmin);
         console2.log("Implementation:", address(impl));
         console2.log("Admin:", admin);
         console2.log("Fee Recipient:", router.feeRecipient());
         console2.log("Fee BPS:", router.feeBps());
         console2.log("Routers whitelisted: Algebra, Odos, Kyber, ZeroX, OpenOcean, OKX, Solidly");
 
-        _saveDeployment(networkName, address(proxy), address(impl), admin);
+        _saveDeployment(networkName, address(proxy), address(impl), admin, proxyAdmin);
     }
 
     function _saveDeployment(
         string memory networkName,
         address proxyAddress,
         address implementationAddress,
-        address admin
+        address admin,
+        address proxyAdminAddress
     ) internal {
         string memory deploymentPath = string.concat(
             "deployments/",
@@ -89,6 +95,7 @@ contract DeployHydrexMultiRouter is Script {
         string memory contractJson = "contracts";
         string memory routerJson = "HydrexMultiRouter";
         vm.serializeAddress(routerJson, "proxy", proxyAddress);
+        vm.serializeAddress(routerJson, "proxyAdmin", proxyAdminAddress);
         vm.serializeAddress(routerJson, "implementation", implementationAddress);
         vm.serializeAddress(routerJson, "admin", admin);
         string memory routerData = vm.serializeString(routerJson, "name", "HydrexMultiRouter");

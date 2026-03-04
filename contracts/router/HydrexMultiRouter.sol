@@ -13,7 +13,6 @@ pragma solidity 0.8.26;
 
 import {AccessControlUpgradeable} from "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
 import {ReentrancyGuardUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
-import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
@@ -22,7 +21,7 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
  * @notice Batched swap router that executes multiple independent swaps in a single transaction,
  *         routing through whitelisted external DEX routers with a configurable protocol fee.
  */
-contract HydrexMultiRouter is AccessControlUpgradeable, ReentrancyGuardUpgradeable, UUPSUpgradeable {
+contract HydrexMultiRouter is AccessControlUpgradeable, ReentrancyGuardUpgradeable {
     using SafeERC20 for IERC20;
 
     /// @notice Sentinel address used to represent native ETH in swap operations
@@ -41,6 +40,9 @@ contract HydrexMultiRouter is AccessControlUpgradeable, ReentrancyGuardUpgradeab
     address public feeRecipient;
     /// @notice Protocol fee charged on swap outputs, in basis points
     uint256 public feeBps;
+
+    /// @dev Storage gap for future upgrades
+    uint256[50] private __gap;
 
     /**
      * @notice Parameters for a single swap operation
@@ -144,7 +146,6 @@ contract HydrexMultiRouter is AccessControlUpgradeable, ReentrancyGuardUpgradeab
 
         __AccessControl_init();
         __ReentrancyGuard_init();
-        __UUPSUpgradeable_init();
 
         _grantRole(DEFAULT_ADMIN_ROLE, _admin);
         feeRecipient = _feeRecipient;
@@ -165,6 +166,7 @@ contract HydrexMultiRouter is AccessControlUpgradeable, ReentrancyGuardUpgradeab
      */
     function executeSwaps(SwapData[] calldata swaps, uint256 deadline) external payable nonReentrant {
         if (block.timestamp > deadline) revert DeadlineExpired();
+        if (swaps.length == 0) revert InvalidAmount();
 
         uint256 totalETHInput;
         for (uint256 i = 0; i < swaps.length; i++) {
@@ -199,7 +201,6 @@ contract HydrexMultiRouter is AccessControlUpgradeable, ReentrancyGuardUpgradeab
         if (hasReferral && swap.referralFeeBps > MAX_REFERRAL_FEE_BPS) revert ReferralFeeTooHigh();
 
         bool inputIsETH = swap.inputAsset == ETH_ADDRESS;
-        bool outputIsETH = swap.outputAsset == ETH_ADDRESS;
 
         // Pull ERC20 input from caller and approve the DEX router
         if (!inputIsETH) {
@@ -207,10 +208,7 @@ contract HydrexMultiRouter is AccessControlUpgradeable, ReentrancyGuardUpgradeab
             IERC20(swap.inputAsset).forceApprove(swap.router, swap.inputAmount);
         }
 
-        // Snapshot output balance before the swap.
-        // When both input and output are ETH, subtract the pending inputAmount
-        // so the measurement captures only the ETH received from the router.
-        uint256 outputBefore = _getBalance(swap.outputAsset) - (inputIsETH && outputIsETH ? swap.inputAmount : 0);
+        uint256 outputBefore = _getBalance(swap.outputAsset);
 
         // Execute the swap
         (bool success, ) = swap.router.call{value: inputIsETH ? swap.inputAmount : 0}(swap.callData);
@@ -277,15 +275,6 @@ contract HydrexMultiRouter is AccessControlUpgradeable, ReentrancyGuardUpgradeab
         }
     }
 
-    /// @dev Authorization check for UUPS upgrades, restricted to DEFAULT_ADMIN_ROLE
-    function _authorizeUpgrade(address) internal override onlyRole(DEFAULT_ADMIN_ROLE) {}
-
-    /// @notice Allow contract to receive ETH directly
-    receive() external payable {}
-
-    /// @dev Storage gap for future upgrades
-    uint256[50] private __gap;
-
     /*//////////////////////////////////////////////////////////////
                                 ADMIN 
     //////////////////////////////////////////////////////////////*/
@@ -298,6 +287,7 @@ contract HydrexMultiRouter is AccessControlUpgradeable, ReentrancyGuardUpgradeab
     function addRouters(address[] calldata routers) external onlyRole(DEFAULT_ADMIN_ROLE) {
         for (uint256 i = 0; i < routers.length; i++) {
             if (routers[i] == address(0)) revert InvalidAddress();
+            if (whitelistedRouters[routers[i]]) continue;
             whitelistedRouters[routers[i]] = true;
             emit RouterAdded(routers[i]);
         }
@@ -310,6 +300,8 @@ contract HydrexMultiRouter is AccessControlUpgradeable, ReentrancyGuardUpgradeab
      */
     function removeRouters(address[] calldata routers) external onlyRole(DEFAULT_ADMIN_ROLE) {
         for (uint256 i = 0; i < routers.length; i++) {
+            if (routers[i] == address(0)) revert InvalidAddress();
+            if (!whitelistedRouters[routers[i]]) continue;
             whitelistedRouters[routers[i]] = false;
             emit RouterRemoved(routers[i]);
         }
@@ -322,6 +314,7 @@ contract HydrexMultiRouter is AccessControlUpgradeable, ReentrancyGuardUpgradeab
      */
     function setFeeBps(uint256 _feeBps) external onlyRole(DEFAULT_ADMIN_ROLE) {
         if (_feeBps > MAX_FEE_BPS) revert FeeTooHigh();
+        if (_feeBps == feeBps) revert InvalidAmount();
         uint256 oldFeeBps = feeBps;
         feeBps = _feeBps;
         emit FeeUpdated(oldFeeBps, _feeBps);
@@ -334,6 +327,7 @@ contract HydrexMultiRouter is AccessControlUpgradeable, ReentrancyGuardUpgradeab
      */
     function setFeeRecipient(address _feeRecipient) external onlyRole(DEFAULT_ADMIN_ROLE) {
         if (_feeRecipient == address(0)) revert InvalidAddress();
+        if (_feeRecipient == feeRecipient) revert InvalidAddress();
         address oldRecipient = feeRecipient;
         feeRecipient = _feeRecipient;
         emit FeeRecipientUpdated(oldRecipient, _feeRecipient);
@@ -347,6 +341,7 @@ contract HydrexMultiRouter is AccessControlUpgradeable, ReentrancyGuardUpgradeab
      * @param recipient Address to receive the recovered tokens
      */
     function emergencyRecover(address token, uint256 amount, address recipient) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (token == address(0)) revert InvalidAddress();
         if (recipient == address(0)) revert InvalidAddress();
         if (amount == 0) revert InvalidAmount();
 
@@ -354,4 +349,7 @@ contract HydrexMultiRouter is AccessControlUpgradeable, ReentrancyGuardUpgradeab
 
         emit EmergencyRecovery(token, amount, recipient);
     }
+
+    /// @notice Allow contract to receive ETH directly
+    receive() external payable {}
 }

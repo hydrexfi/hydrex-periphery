@@ -11,20 +11,28 @@ pragma solidity 0.8.26;
 
 */
 
-import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
+import {TransparentUpgradeableProxy} from "@openzeppelin/contracts/proxy/transparent/TransparentUpgradeableProxy.sol";
 
 /**
  * @title HydrexMultiRouterProxy
- * @notice UUPS-compatible ERC1967 proxy for HydrexMultiRouter
+ * @notice Transparent upgradeable proxy for HydrexMultiRouter
  */
-contract HydrexMultiRouterProxy is ERC1967Proxy {
+contract HydrexMultiRouterProxy is TransparentUpgradeableProxy {
+    /// @dev Prevent bytecode collisions
+    string public constant NAME = "HydrexMultiRouterProxy";
+
     /**
-     * @notice Initialize the proxy with the implementation address and initialization data
+     * @notice Initialize the proxy with the implementation address, ProxyAdmin owner, and initialization data
      * @param logic_ Address of the initial implementation contract
+     * @param admin_ Address that will own the auto-deployed ProxyAdmin contract
      * @param data_ Encoded initialization call data
      */
     constructor(
         address logic_,
+        address admin_,
         bytes memory data_
-    ) ERC1967Proxy(logic_, data_) {}
+    ) TransparentUpgradeableProxy(logic_, admin_, data_) {}
+
+    /// @dev Allow the contract to receive ETH
+    receive() external payable {}
 }
