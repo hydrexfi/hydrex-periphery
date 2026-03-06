@@ -11,7 +11,7 @@ pragma solidity 0.8.26;
 
 */
 
-import {Ownable2Step, Ownable} from "@openzeppelin/contracts/access/Ownable2Step.sol";
+import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
@@ -24,9 +24,10 @@ import {HydrexMultiRouter} from "./HydrexMultiRouter.sol";
  *         the total received per token is forwarded to feeRecipient in one shot
  *         for clean accounting.
  */
-contract TokenJar is Ownable2Step, ReentrancyGuard {
+contract TokenJar is AccessControl, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
+    bytes32 public constant SWEEPER_ROLE = keccak256("SWEEPER_ROLE");
     address public constant ETH_ADDRESS = 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE;
 
     /// @notice HydrexMultiRouter used to execute swaps
@@ -63,8 +64,17 @@ contract TokenJar is Ownable2Step, ReentrancyGuard {
     error ETHTransferFailed();
     error InsufficientBalance(address token);
 
-    constructor(address _owner, address _router, address _feeRecipient) Ownable(_owner) {
-        if (_router == address(0) || _feeRecipient == address(0)) revert InvalidAddress();
+    /// @dev Allows ADMIN_ROLE or SWEEPER_ROLE — sweep is the one shared action.
+    modifier onlyAdminOrSweeper() {
+        if (!hasRole(DEFAULT_ADMIN_ROLE, msg.sender) && !hasRole(SWEEPER_ROLE, msg.sender)) {
+            revert AccessControlUnauthorizedAccount(msg.sender, SWEEPER_ROLE);
+        }
+        _;
+    }
+
+    constructor(address _owner, address _router, address _feeRecipient) {
+        if (_owner == address(0) || _router == address(0) || _feeRecipient == address(0)) revert InvalidAddress();
+        _grantRole(DEFAULT_ADMIN_ROLE, _owner);
         router = HydrexMultiRouter(payable(_router));
         feeRecipient = _feeRecipient;
     }
@@ -81,7 +91,7 @@ contract TokenJar is Ownable2Step, ReentrancyGuard {
      * @param instructions Array of swap configs (recommended max: 30)
      * @param deadline     Unix timestamp after which the call reverts
      */
-    function sweep(SweepInstruction[] calldata instructions, uint256 deadline) external nonReentrant onlyOwner {
+    function sweep(SweepInstruction[] calldata instructions, uint256 deadline) external nonReentrant onlyAdminOrSweeper {
         if (instructions.length == 0) revert NoInstructions();
 
         uint256 len = instructions.length;
@@ -174,21 +184,21 @@ contract TokenJar is Ownable2Step, ReentrancyGuard {
                                 ADMIN
     //////////////////////////////////////////////////////////////*/
 
-    function setRouter(address _router) external onlyOwner {
+    function setRouter(address _router) external onlyRole(DEFAULT_ADMIN_ROLE) {
         if (_router == address(0)) revert InvalidAddress();
         address old = address(router);
         router = HydrexMultiRouter(payable(_router));
         emit RouterUpdated(old, _router);
     }
 
-    function setFeeRecipient(address _recipient) external onlyOwner {
+    function setFeeRecipient(address _recipient) external onlyRole(DEFAULT_ADMIN_ROLE) {
         if (_recipient == address(0)) revert InvalidAddress();
         address old = feeRecipient;
         feeRecipient = _recipient;
         emit FeeRecipientUpdated(old, _recipient);
     }
 
-    function recoverToken(address token, uint256 amount, address to) external onlyOwner {
+    function recoverToken(address token, uint256 amount, address to) external onlyRole(DEFAULT_ADMIN_ROLE) {
         if (to == address(0)) revert InvalidAddress();
         if (amount == 0) revert InvalidAmount();
         if (token == ETH_ADDRESS) {

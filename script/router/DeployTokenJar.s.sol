@@ -21,7 +21,7 @@ import {TokenJar} from "../../contracts/router/TokenJar.sol";
  */
 contract DeployTokenJar is Script {
     // HydrexMultiRouter proxy on Base mainnet
-    address constant DEFAULT_MULTI_ROUTER = 0x23823b8B3b7B5E9FE831DFD65Ed9Ea95dA51Dc1b;
+    address constant DEFAULT_MULTI_ROUTER = 0x599bFa1039C9e22603F15642B711D56BE62071f4;
 
     function run() public {
         uint256 deployerKey = vm.envUint("DEPLOYER_KEY");
@@ -48,7 +48,7 @@ contract DeployTokenJar is Script {
 
         console2.log("\n=== Deployment Successful ===");
         console2.log("TokenJar:         ", address(jar));
-        console2.log("Owner:            ", jar.owner());
+        console2.log("Admin:            ", owner);
         console2.log("HydrexMultiRouter:", address(jar.router()));
         console2.log("Fee Recipient: ", jar.feeRecipient());
 
@@ -77,7 +77,7 @@ contract DeployTokenJar is Script {
 
         string memory contractJson = "TokenJar";
         vm.serializeAddress(contractJson, "address", jarAddress);
-        vm.serializeAddress(contractJson, "owner", owner);
+        vm.serializeAddress(contractJson, "admin", owner);
         vm.serializeAddress(contractJson, "multiRouter", multiRouter);
         string memory contractData = vm.serializeAddress(contractJson, "feeRecipient", feeRecipient);
 
