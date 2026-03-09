@@ -198,6 +198,28 @@ contract TokenJar is AccessControl, ReentrancyGuard {
         emit FeeRecipientUpdated(old, _recipient);
     }
 
+    /**
+     * @notice Forward tokens directly to feeRecipient without swapping.
+     *         Useful for tokens that are already stables or don't need conversion.
+     * @param token  Token to forward (ETH_ADDRESS for native ETH)
+     * @param amount Amount to forward; 0 = full balance
+     */
+    function forward(address token, uint256 amount) external nonReentrant onlyAdminOrSweeper {
+        address _recipient = feeRecipient;
+        uint256 _amount = amount == 0
+            ? (token == ETH_ADDRESS ? address(this).balance : IERC20(token).balanceOf(address(this)))
+            : amount;
+        if (_amount == 0) revert InvalidAmount();
+
+        if (token == ETH_ADDRESS) {
+            (bool ok, ) = payable(_recipient).call{value: _amount}("");
+            if (!ok) revert ETHTransferFailed();
+        } else {
+            IERC20(token).safeTransfer(_recipient, _amount);
+        }
+        emit Forwarded(token, _amount, _recipient);
+    }
+
     function recoverToken(address token, uint256 amount, address to) external onlyRole(DEFAULT_ADMIN_ROLE) {
         if (to == address(0)) revert InvalidAddress();
         if (amount == 0) revert InvalidAmount();
