@@ -40,16 +40,30 @@
     "fork:repricing": "forge script script/tests/HydrexPoolRepricingTest.s.sol:TestHydrexPoolRepricing --rpc-url https://mainnet.base.org",
     "deploy:repricing:base": "source .env && NETWORK=base forge script script/extra/DeployHydrexPoolRepricing.s.sol:DeployHydrexPoolRepricing --rpc-url https://mainnet.base.org --slow --broadcast --verify --verifier etherscan --verifier-url https://api.etherscan.io/v2/api?chainid=8453 --etherscan-api-key $BASESCAN_API_KEY",
     "deploy:anchor-club:base": "source .env && NETWORK=base forge script script/extra/DeployAnchorClub.s.sol:DeployAnchorClub --rpc-url $BASE_RPC_URL --slow --broadcast --verify --verifier etherscan --verifier-url https://api.etherscan.io/v2/api?chainid=8453 --etherscan-api-key $BASESCAN_API_KEY",
-    "deploy:anchor-club-season2:base": "source .env && NETWORK=base forge script script/extra/DeployAnchorClubSeason2.s.sol:DeployAnchorClubSeason2 --rpc-url https://mainnet.base.org --slow --broadcast --verify --verifier etherscan --verifier-url https://api.etherscan.io/v2/api?chainid=8453 --etherscan-api-key $BASESCAN_API_KEY"
+    "deploy:anchor-club-season2:base": "source .env && NETWORK=base forge script script/extra/DeployAnchorClubSeason2.s.sol:DeployAnchorClubSeason2 --rpc-url https://mainnet.base.org --slow --broadcast --verify --verifier etherscan --verifier-url https://api.etherscan.io/v2/api?chainid=8453 --etherscan-api-key $BASESCAN_API_KEY",
+    "deploy:receiver:base": "source .env && NETWORK=base forge script script/bridge/DeployHydrexReceiver.s.sol:DeployHydrexReceiver --rpc-url https://mainnet.base.org --slow --broadcast --verify --verifier etherscan --verifier-url https://api.etherscan.io/v2/api?chainid=8453 --etherscan-api-key $BASESCAN_API_KEY",
+    "deploy:auction-router:base": "source .env && NETWORK=base forge script script/bridge/DeployHydrexMultichainAuctionRouter.s.sol:DeployHydrexMultichainAuctionRouter --rpc-url $BASE_RPC_URL --slow --broadcast --verify --verifier etherscan --verifier-url https://api.etherscan.io/v2/api?chainid=8453 --etherscan-api-key $BASESCAN_API_KEY",
+    "deploy:auction-router:base-sepolia": "source .env && NETWORK=base-sepolia forge script script/bridge/DeployHydrexMultichainAuctionRouter.s.sol:DeployHydrexMultichainAuctionRouter --rpc-url $BASE_SEPOLIA_RPC_URL --broadcast --verify --verifier etherscan --verifier-url https://api-sepolia.basescan.org/api --etherscan-api-key $BASESCAN_API_KEY",
+    "bridge:deploy-wrapped": "source .env && npx tsx scripts/deploy-wrapped-token.ts",
+    "swap:e2e": "source .env && npx tsx scripts/e2e-swap.ts",
+    "bridge:fill": "source .env && npx tsx scripts/bridge-with-calldata.ts",
+    "bridge:fill:no-relay": "source .env && npx tsx scripts/bridge-with-calldata.ts --no-relay",
+    "bridge:monitor": "source .env && npx tsx scripts/monitor-router.ts",
+    "test:bridge": "forge test --match-path 'test/bridge/*.t.sol' -v"
   },
   "dependencies": {
     "@openzeppelin/contracts": "^5.3.0",
     "@openzeppelin/contracts-upgradeable": "^5.4.0",
+    "@solana-program/system": "^0.12.0",
+    "@solana-program/token": "^0.12.0",
+    "@solana/kit": "^6.5.0",
     "@uniswap/v4-core": "^1.0.1",
+    "bs58": "^6.0.0",
     "dotenv": "^16.4.5",
     "viem": "^2.23.11"
   },
   "devDependencies": {
-    "@types/node": "^22.13.14"
+    "@types/node": "^22.13.14",
+    "tsx": "^4.21.0"
   }
 }
