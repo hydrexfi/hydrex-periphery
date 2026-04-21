@@ -43,7 +43,8 @@
     "deploy:repricing:base": "source .env && NETWORK=base forge script script/extra/DeployHydrexPoolRepricing.s.sol:DeployHydrexPoolRepricing --rpc-url https://mainnet.base.org --slow --broadcast --verify --verifier etherscan --verifier-url https://api.etherscan.io/v2/api?chainid=8453 --etherscan-api-key $BASESCAN_API_KEY",
     "deploy:anchor-club:base": "source .env && NETWORK=base forge script script/extra/DeployAnchorClub.s.sol:DeployAnchorClub --rpc-url $BASE_RPC_URL --slow --broadcast --verify --verifier etherscan --verifier-url https://api.etherscan.io/v2/api?chainid=8453 --etherscan-api-key $BASESCAN_API_KEY",
     "deploy:anchor-club-season2:base": "source .env && NETWORK=base forge script script/extra/DeployAnchorClubSeason2.s.sol:DeployAnchorClubSeason2 --rpc-url https://mainnet.base.org --slow --broadcast --verify --verifier etherscan --verifier-url https://api.etherscan.io/v2/api?chainid=8453 --etherscan-api-key $BASESCAN_API_KEY",
-    "deploy:reward-claims:base": "source .env && NETWORK=base forge script script/extra/DeployRewardClaims.s.sol:DeployRewardClaims --rpc-url https://mainnet.base.org --slow --broadcast --verify --verifier etherscan --verifier-url https://api.etherscan.io/v2/api?chainid=8453 --etherscan-api-key $BASESCAN_API_KEY"
+    "deploy:reward-claims:base": "source .env && NETWORK=base forge script script/extra/DeployRewardClaims.s.sol:DeployRewardClaims --rpc-url https://mainnet.base.org --slow --broadcast --verify --verifier etherscan --verifier-url https://api.etherscan.io/v2/api?chainid=8453 --etherscan-api-key $BASESCAN_API_KEY",
+    "deploy:send-referral:base": "source .env && NETWORK=base forge script script/send/DeploySendReferral.s.sol:DeploySendReferral --rpc-url https://mainnet.base.org --slow --broadcast --verify --verifier etherscan --verifier-url https://api.etherscan.io/v2/api?chainid=8453 --etherscan-api-key $BASESCAN_API_KEY"
   },
   "dependencies": {
     "@openzeppelin/contracts": "^5.3.0",
