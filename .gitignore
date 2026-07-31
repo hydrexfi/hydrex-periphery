@@ -26,3 +26,5 @@ node_modules
 
 # Hardhat Ignition default folder for deployments against a local node
 ignition/deployments
+# Anchor Club snapshot scan cache (derived, regenerate with RESCAN=1)
+/script/anchor-club/data/season3-candidates.json
