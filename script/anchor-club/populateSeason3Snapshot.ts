@@ -16,7 +16,7 @@
 import { createPublicClient, createWalletClient, http, getAddress, parseAbi, type Address } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { base } from "viem/chains";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import "dotenv/config";
 
@@ -110,6 +110,13 @@ async function send(label: string, write: (fee: Awaited<ReturnType<typeof fees>>
 async function main() {
   const liquidAddr = getAddress(process.env.SEASON3_LIQUID_SNAPSHOT as Address);
   const veMaxiAddr = getAddress(process.env.SEASON3_VEMAXI_SNAPSHOT as Address);
+
+  if (!existsSync(SNAPSHOT_FILE)) {
+    throw new Error(
+      `${SNAPSHOT_FILE} not found — it is derived data and is not committed. ` +
+        "Rebuild it with `npm run snapshot:anchor-club-season3`."
+    );
+  }
 
   const snap = JSON.parse(readFileSync(SNAPSHOT_FILE, "utf8"));
   const liquid: LiquidEntry[] = snap.liquid.map((r: any) => ({ user: getAddress(r.user), amount: BigInt(r.amount) }));
